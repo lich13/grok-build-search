@@ -18,6 +18,9 @@ class RepositoryLayoutTests(unittest.TestCase):
 
         ci = ci_path.read_text(encoding="utf-8")
         for required in [
+            "uses: actions/checkout@v7",
+            "uses: actions/setup-python@v6",
+            'python-version: "3.12"',
             "cargo fmt --all -- --check",
             "cargo clippy --all-targets --locked -- -D warnings",
             "cargo test --all-targets --locked",
@@ -26,6 +29,12 @@ class RepositoryLayoutTests(unittest.TestCase):
             self.assertIn(required, ci)
 
         release = release_path.read_text(encoding="utf-8")
+        for required in [
+            "uses: actions/checkout@v7",
+            "uses: actions/upload-artifact@v7",
+            "uses: actions/download-artifact@v8",
+        ]:
+            self.assertIn(required, release)
         targets = {
             "aarch64-apple-darwin": "grok-build-search-mcp-darwin-aarch64",
             "x86_64-apple-darwin": "grok-build-search-mcp-darwin-x86_64",
