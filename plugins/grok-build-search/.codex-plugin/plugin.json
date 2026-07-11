@@ -1,0 +1,34 @@
+{
+  "name": "grok-build-search",
+  "version": "0.1.0",
+  "description": "Search and fetch public web content through the local Grok Build CLI.",
+  "author": {
+    "name": "lich13",
+    "url": "https://github.com/lich13"
+  },
+  "homepage": "https://github.com/lich13/grok-build-search",
+  "repository": "https://github.com/lich13/grok-build-search",
+  "license": "MIT",
+  "keywords": [
+    "grok",
+    "search",
+    "mcp",
+    "codex"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Grok Build Search",
+    "shortDescription": "Search the web with your local Grok Build CLI.",
+    "longDescription": "Adds guarded web search and public URL fetching through an existing local Grok Build installation and login session.",
+    "developerName": "lich13",
+    "category": "Productivity",
+    "capabilities": [
+      "Search",
+      "Fetch"
+    ],
+    "defaultPrompt": [
+      "Use Grok to search the web and cite the sources."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

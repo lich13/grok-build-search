@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.94.1 --profile minimal --component rustfmt --component clippy
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Run Rust tests
+        run: cargo test --all-targets --locked
+
+      - name: Run launcher and repository tests
+        run: python3 -m unittest discover -s tests -p 'test_*.py'
+
+      - name: Check launcher syntax
+        run: sh -n plugins/grok-build-search/scripts/grok-build-search-mcp

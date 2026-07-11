@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "grok-build-search": {
+      "command": "./scripts/grok-build-search-mcp",
+      "args": [],
+      "env_vars": [
+        "GROK_BUILD_SEARCH_MCP_BIN",
+        "GROK_BUILD_SEARCH_CACHE_DIR",
+        "GROK_BIN"
+      ],
+      "cwd": "."
+    }
+  }
+}

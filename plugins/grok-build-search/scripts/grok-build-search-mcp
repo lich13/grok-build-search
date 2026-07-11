@@ -1,0 +1,126 @@
+#!/bin/sh
+set -eu
+
+VERSION="0.1.0"
+REPOSITORY="lich13/grok-build-search"
+RELEASE_BASE="https://github.com/${REPOSITORY}/releases/download/v${VERSION}"
+
+fail() {
+  printf 'grok-build-search: %s\n' "$*" >&2
+  exit 1
+}
+
+if [ -n "${GROK_BUILD_SEARCH_MCP_BIN:-}" ]; then
+  [ -x "$GROK_BUILD_SEARCH_MCP_BIN" ] \
+    || fail "GROK_BUILD_SEARCH_MCP_BIN is not executable"
+  exec "$GROK_BUILD_SEARCH_MCP_BIN" "$@"
+fi
+
+system=$(uname -s)
+machine=$(uname -m)
+
+case "$system" in
+  Darwin) platform="darwin" ;;
+  Linux) platform="linux" ;;
+  *) fail "Unsupported platform: ${system}/${machine}" ;;
+esac
+
+case "$machine" in
+  arm64|aarch64) architecture="aarch64" ;;
+  x86_64|amd64) architecture="x86_64" ;;
+  *) fail "Unsupported platform: ${system}/${machine}" ;;
+esac
+
+asset="grok-build-search-mcp-${platform}-${architecture}"
+cache_root="${GROK_BUILD_SEARCH_CACHE_DIR:-${XDG_CACHE_HOME:-${HOME}/.cache}/grok-build-search}"
+version_dir="${cache_root}/v${VERSION}"
+binary="${version_dir}/${asset}"
+checksums="${version_dir}/SHA256SUMS"
+lock_dir="${version_dir}/.install.lock"
+
+umask 077
+mkdir -p "$version_dir"
+
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    fail "No SHA-256 tool found (expected sha256sum or shasum)"
+  fi
+}
+
+expected_checksum() {
+  awk -v asset="$asset" '
+    $2 == asset || $2 == "*" asset { print $1; exit }
+  ' "$1"
+}
+
+valid_checksum() {
+  value=$1
+  [ "${#value}" -eq 64 ] || return 1
+  case "$value" in
+    *[!0-9a-fA-F]*) return 1 ;;
+  esac
+}
+
+cache_is_valid() {
+  [ -x "$binary" ] || return 1
+  [ -f "$checksums" ] || return 1
+  expected=$(expected_checksum "$checksums")
+  valid_checksum "$expected" || return 1
+  actual=$(sha256_file "$binary")
+  [ "$actual" = "$expected" ]
+}
+
+if cache_is_valid; then
+  exec "$binary" "$@"
+fi
+
+attempt=0
+while ! mkdir "$lock_dir" 2>/dev/null; do
+  attempt=$((attempt + 1))
+  [ "$attempt" -lt 30 ] || fail "Timed out waiting for the launcher install lock"
+  sleep 1
+done
+
+temporary_checksums=""
+temporary_binary=""
+cleanup() {
+  [ -z "$temporary_checksums" ] || rm -f "$temporary_checksums"
+  [ -z "$temporary_binary" ] || rm -f "$temporary_binary"
+  rmdir "$lock_dir" 2>/dev/null || true
+}
+trap cleanup 0 1 2 15
+
+if ! cache_is_valid; then
+  temporary_checksums=$(mktemp "${version_dir}/.SHA256SUMS.XXXXXX")
+  temporary_binary=$(mktemp "${version_dir}/.${asset}.XXXXXX")
+
+  printf 'grok-build-search: downloading %s\n' "$asset" >&2
+  curl -q -fL --connect-timeout 15 --max-time 300 \
+    -o "$temporary_checksums" "${RELEASE_BASE}/SHA256SUMS" \
+    || fail "Could not download SHA256SUMS"
+
+  expected=$(expected_checksum "$temporary_checksums")
+  valid_checksum "$expected" \
+    || fail "SHA-256 entry for ${asset} is missing or invalid"
+
+  curl -q -fL --connect-timeout 15 --max-time 300 \
+    -o "$temporary_binary" "${RELEASE_BASE}/${asset}" \
+    || fail "Could not download ${asset}"
+  actual=$(sha256_file "$temporary_binary")
+  [ "$actual" = "$expected" ] \
+    || fail "SHA-256 mismatch for ${asset}"
+
+  chmod 755 "$temporary_binary"
+  mv -f "$temporary_checksums" "$checksums"
+  temporary_checksums=""
+  mv -f "$temporary_binary" "$binary"
+  temporary_binary=""
+fi
+
+cleanup
+trap - 0 1 2 15
+exec "$binary" "$@"

@@ -1,0 +1,10 @@
+interface:
+  display_name: "Grok Search"
+  short_description: "Search the web through local Grok Build"
+  default_prompt: "Use $grok-search to search the web with Grok and cite the sources."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "grok-build-search"
+      description: "Local Grok Build search and fetch MCP server"
