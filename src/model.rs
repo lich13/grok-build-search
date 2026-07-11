@@ -243,8 +243,14 @@ fn extract_sources(text: &str) -> Vec<Source> {
             Event::Start(Tag::Link { dest_url, .. }) => {
                 push_source(dest_url.as_ref(), &mut seen, &mut sources);
             }
-            Event::Text(text) | Event::Code(text) | Event::Html(text) | Event::InlineHtml(text) => {
+            Event::Text(text) | Event::Code(text) => {
                 for link in finder.links(text.as_ref()) {
+                    push_source(link.as_str(), &mut seen, &mut sources);
+                }
+            }
+            Event::Html(html) | Event::InlineHtml(html) => {
+                let decoded = html_escape::decode_html_entities(html.as_ref());
+                for link in finder.links(decoded.as_ref()) {
                     push_source(link.as_str(), &mut seen, &mut sources);
                 }
             }

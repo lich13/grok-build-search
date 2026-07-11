@@ -13,6 +13,7 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow = "1.0"
+html-escape = "0.2"
 linkify = "0.10"
 pulldown-cmark = "0.13"
 rmcp = { version = "2.2.0", features = ["transport-io"] }

@@ -103,6 +103,19 @@ fn url_bearing_markdown_event_variants_are_extracted() {
 }
 
 #[test]
+fn html_entities_in_source_urls_are_decoded() {
+    let raw = serde_json::json!({
+        "text": "<a href=\"https://example.com/search?a=1&amp;b=2\">source</a>"
+    })
+    .to_string();
+
+    let output =
+        parse_grok_json(&raw, ResponseFormat::Concise).expect("HTML source URL must be extracted");
+
+    assert_eq!(output.sources[0].url, "https://example.com/search?a=1&b=2");
+}
+
+#[test]
 fn response_is_truncated_on_character_boundary() {
     let raw = serde_json::json!({
         "text": format!("{} https://example.com/source", "界".repeat(12_100)),
