@@ -48,6 +48,32 @@ fn concise_grok_json_is_parsed_without_thought_and_deduplicates_sources() {
 }
 
 #[test]
+fn markdown_citation_extracts_visible_url_and_link_destination() {
+    let raw = serde_json::json!({
+        "text": "**https://www.rust-lang.org/**[[1]](https://www.rust-lang.org/en-US)",
+        "stopReason": "end_turn",
+        "sessionId": "session-markdown",
+        "requestId": "request-markdown"
+    })
+    .to_string();
+
+    let output = parse_grok_json(&raw, ResponseFormat::Concise).expect("valid Grok JSON");
+
+    let sources: Vec<_> = output
+        .sources
+        .iter()
+        .map(|source| source.url.as_str())
+        .collect();
+    assert_eq!(
+        sources,
+        [
+            "https://www.rust-lang.org/",
+            "https://www.rust-lang.org/en-US"
+        ]
+    );
+}
+
+#[test]
 fn response_is_truncated_on_character_boundary() {
     let raw = serde_json::json!({
         "text": format!("{} https://example.com/source", "界".repeat(12_100)),

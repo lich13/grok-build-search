@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use linkify::{LinkFinder, LinkKind};
+use pulldown_cmark::{Event, Parser, Tag};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -237,18 +238,32 @@ fn extract_sources(text: &str) -> Vec<Source> {
     let mut seen = HashSet::new();
     let mut sources = Vec::new();
 
-    for link in finder.links(text) {
-        let Ok(parsed) = Url::parse(link.as_str()) else {
-            continue;
-        };
-        if !is_safe_source_url(&parsed) {
-            continue;
-        }
-        let normalized = parsed.to_string();
-        if seen.insert(normalized.clone()) {
-            sources.push(Source { url: normalized });
+    for event in Parser::new(text) {
+        match event {
+            Event::Start(Tag::Link { dest_url, .. }) => {
+                push_source(dest_url.as_ref(), &mut seen, &mut sources);
+            }
+            Event::Text(text) => {
+                for link in finder.links(text.as_ref()) {
+                    push_source(link.as_str(), &mut seen, &mut sources);
+                }
+            }
+            _ => {}
         }
     }
 
     sources
+}
+
+fn push_source(candidate: &str, seen: &mut HashSet<String>, sources: &mut Vec<Source>) {
+    let Ok(parsed) = Url::parse(candidate) else {
+        return;
+    };
+    if !is_safe_source_url(&parsed) {
+        return;
+    }
+    let normalized = parsed.to_string();
+    if seen.insert(normalized.clone()) {
+        sources.push(Source { url: normalized });
+    }
 }

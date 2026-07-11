@@ -1,6 +1,6 @@
 [package]
 name = "grok-build-search-mcp"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.94.1"
 description = "Codex MCP bridge for the local Grok Build CLI"
@@ -14,6 +14,7 @@ path = "src/lib.rs"
 [dependencies]
 anyhow = "1.0"
 linkify = "0.10"
+pulldown-cmark = "0.13"
 rmcp = { version = "2.2.0", features = ["transport-io"] }
 schemars = "1.0"
 semver = "1.0"
