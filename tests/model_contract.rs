@@ -74,6 +74,35 @@ fn markdown_citation_extracts_visible_url_and_link_destination() {
 }
 
 #[test]
+fn url_bearing_markdown_event_variants_are_extracted() {
+    let cases = [
+        (
+            "Source: `https://example.com/code`",
+            "https://example.com/code",
+        ),
+        (
+            "<a href=\"https://example.com/inline-html\">source</a>",
+            "https://example.com/inline-html",
+        ),
+        (
+            "<div>https://example.com/html-block</div>\n",
+            "https://example.com/html-block",
+        ),
+    ];
+
+    for (text, expected) in cases {
+        let raw = serde_json::json!({ "text": text }).to_string();
+        let output = parse_grok_json(&raw, ResponseFormat::Concise)
+            .expect("URL-bearing Markdown event must provide a source");
+
+        assert_eq!(
+            output.sources[0].url, expected,
+            "unexpected source for {text}"
+        );
+    }
+}
+
+#[test]
 fn response_is_truncated_on_character_boundary() {
     let raw = serde_json::json!({
         "text": format!("{} https://example.com/source", "界".repeat(12_100)),

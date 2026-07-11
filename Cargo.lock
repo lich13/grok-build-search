@@ -293,7 +293,7 @@ dependencies = [
 
 [[package]]
 name = "grok-build-search-mcp"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "linkify",

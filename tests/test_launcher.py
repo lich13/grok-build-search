@@ -120,7 +120,7 @@ class LauncherTests(unittest.TestCase):
             self.assertEqual(second.returncode, 0, second.stderr)
             self.assertEqual(first.stdout, "payload:doctor\n")
             self.assertEqual(len(first_urls), 2)
-            self.assertTrue(all("/v0.1.1/" in url for url in first_urls))
+            self.assertTrue(all("/v0.1.2/" in url for url in first_urls))
             self.assertTrue(first_urls[0].endswith("/SHA256SUMS"))
             self.assertTrue(first_urls[1].endswith("/grok-build-search-mcp-darwin-aarch64"))
             self.assertFalse(curl_log.exists(), "cached launch must not call curl")
@@ -132,7 +132,7 @@ class LauncherTests(unittest.TestCase):
             asset = "grok-build-search-mcp-darwin-aarch64"
             environment["FAKE_ASSET"] = asset
             self.assertEqual(self.run_launcher(environment).returncode, 0)
-            cached = directory / "cache" / "v0.1.1" / asset
+            cached = directory / "cache" / "v0.1.2" / asset
             cached.write_text("tampered", encoding="utf-8")
             curl_log.unlink()
 
@@ -156,7 +156,7 @@ class LauncherTests(unittest.TestCase):
 
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("SHA-256", result.stderr)
-            self.assertFalse((directory / "cache" / "v0.1.1" / asset).exists())
+            self.assertFalse((directory / "cache" / "v0.1.2" / asset).exists())
 
     def test_maps_all_supported_release_assets(self) -> None:
         cases = [
