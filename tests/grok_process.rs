@@ -3,7 +3,7 @@ use std::{
     ffi::OsString,
     fs,
     path::{Path, PathBuf},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use grok_build_search_mcp::{ErrorCode, GrokClient, GrokConfig, GrokLocator, ResponseFormat};
@@ -322,16 +322,23 @@ async fn process_failures_map_to_stable_error_codes() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn process_concurrency_is_limited_to_two() {
+    let temp = TempDir::new().unwrap();
+    let timing_log = temp.path().join("timing.jsonl");
     let client = client_with(
         "sleep",
         Duration::from_secs(2),
         2,
-        [(
-            OsString::from("FAKE_GROK_SLEEP_SECONDS"),
-            OsString::from("0.20"),
-        )],
+        [
+            (
+                OsString::from("FAKE_GROK_SLEEP_SECONDS"),
+                OsString::from("0.20"),
+            ),
+            (
+                OsString::from("FAKE_GROK_TIMING_LOG"),
+                timing_log.clone().into_os_string(),
+            ),
+        ],
     );
-    let started = Instant::now();
 
     let first = client.search("first", ResponseFormat::Concise);
     let second = client.search("second", ResponseFormat::Concise);
@@ -341,13 +348,30 @@ async fn process_concurrency_is_limited_to_two() {
     first.unwrap();
     second.unwrap();
     third.unwrap();
-    let elapsed = started.elapsed();
-    assert!(
-        elapsed >= Duration::from_millis(350),
-        "limit was bypassed: {elapsed:?}"
-    );
-    assert!(
-        elapsed < Duration::from_millis(900),
-        "processes ran serially: {elapsed:?}"
-    );
+
+    let mut events: Vec<(u64, i32)> = fs::read_to_string(timing_log)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .map(|event| {
+            let delta = match event["event"].as_str().unwrap() {
+                "start" => 1,
+                "end" => -1,
+                value => panic!("unexpected timing event {value}"),
+            };
+            (event["time_ns"].as_u64().unwrap(), delta)
+        })
+        .collect();
+    assert_eq!(events.len(), 6, "three processes must start and finish");
+    events.sort_unstable();
+
+    let mut active = 0;
+    let mut peak = 0;
+    for (_time, delta) in events {
+        active += delta;
+        assert!(active >= 0, "end event appeared before its start event");
+        peak = peak.max(active);
+    }
+    assert_eq!(active, 0, "all fake Grok processes must finish");
+    assert_eq!(peak, 2, "semaphore must permit exactly two processes");
 }
