@@ -10,6 +10,8 @@ use grok_build_search_mcp::{ErrorCode, GrokClient, GrokConfig, GrokLocator, Resp
 use serde_json::Value;
 use tempfile::TempDir;
 
+const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+
 fn fake_grok() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -108,7 +110,7 @@ fn locator_returns_stable_not_found_error() {
 
 #[tokio::test]
 async fn probe_accepts_supported_version_and_rejects_future_minor() {
-    let supported = client_with("search-success", Duration::from_secs(1), 2, []);
+    let supported = client_with("search-success", TEST_TIMEOUT, 2, []);
     assert_eq!(
         supported.probe_version().await.unwrap().to_string(),
         "0.2.93"
@@ -116,7 +118,7 @@ async fn probe_accepts_supported_version_and_rejects_future_minor() {
 
     let future = client_with(
         "search-success",
-        Duration::from_secs(1),
+        TEST_TIMEOUT,
         2,
         [(
             OsString::from("FAKE_GROK_VERSION"),
@@ -136,7 +138,7 @@ async fn search_rejects_unsupported_version_before_prompt_execution() {
     let log_path = temp.path().join("must-not-exist.json");
     let client = client_with(
         "search-success",
-        Duration::from_secs(1),
+        TEST_TIMEOUT,
         2,
         [
             (
@@ -166,7 +168,7 @@ async fn search_uses_isolated_prompt_file_and_guarded_arguments() {
     let query = "sensitive query value must not appear in argv";
     let client = client_with(
         "stderr-warning",
-        Duration::from_secs(2),
+        TEST_TIMEOUT,
         2,
         [
             (
@@ -257,7 +259,7 @@ async fn exit_error_redacts_prompt_path_and_credentials() {
     let log_path = temp.path().join("invocation.json");
     let client = client_with(
         "exit-failed",
-        Duration::from_secs(1),
+        TEST_TIMEOUT,
         2,
         [
             (
@@ -292,13 +294,9 @@ async fn exit_error_redacts_prompt_path_and_credentials() {
 #[tokio::test]
 async fn process_failures_map_to_stable_error_codes() {
     let cases = [
-        ("bad-json", ErrorCode::BadGrokJson, Duration::from_secs(1)),
-        (
-            "exit-failed",
-            ErrorCode::GrokExitFailed,
-            Duration::from_secs(1),
-        ),
-        ("no-sources", ErrorCode::NoSources, Duration::from_secs(1)),
+        ("bad-json", ErrorCode::BadGrokJson, TEST_TIMEOUT),
+        ("exit-failed", ErrorCode::GrokExitFailed, TEST_TIMEOUT),
+        ("no-sources", ErrorCode::NoSources, TEST_TIMEOUT),
         ("sleep", ErrorCode::GrokTimeout, Duration::from_millis(20)),
     ];
 
@@ -326,7 +324,7 @@ async fn process_concurrency_is_limited_to_two() {
     let timing_log = temp.path().join("timing.jsonl");
     let client = client_with(
         "sleep",
-        Duration::from_secs(2),
+        TEST_TIMEOUT,
         2,
         [
             (

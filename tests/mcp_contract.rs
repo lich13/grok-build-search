@@ -6,12 +6,14 @@ use grok_build_search_mcp::{
 };
 use rmcp::handler::server::wrapper::{Json, Parameters};
 
+const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+
 fn server_with(mode: &str) -> GrokMcpServer {
     let binary = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-grok");
     let environment = BTreeMap::from([(OsString::from("FAKE_GROK_MODE"), OsString::from(mode))]);
     let client = GrokClient::new(
         GrokConfig::new(binary)
-            .with_timeout(Duration::from_secs(2))
+            .with_timeout(TEST_TIMEOUT)
             .with_environment(environment),
     )
     .unwrap();

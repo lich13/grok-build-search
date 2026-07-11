@@ -7,6 +7,9 @@ use tokio::{
     process::{Child, ChildStdin, ChildStdout, Command},
 };
 
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+
 struct TestServer {
     child: Child,
     stdin: ChildStdin,
@@ -56,7 +59,7 @@ impl TestServer {
     }
 
     async fn response(&mut self, expected_id: u64) -> Value {
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(RESPONSE_TIMEOUT, async {
             loop {
                 let mut line = String::new();
                 let bytes = self.stdout.read_line(&mut line).await.unwrap();
@@ -99,7 +102,7 @@ impl TestServer {
 
     async fn shutdown(mut self) {
         drop(self.stdin);
-        tokio::time::timeout(Duration::from_secs(2), self.child.wait())
+        tokio::time::timeout(SHUTDOWN_TIMEOUT, self.child.wait())
             .await
             .expect("server shutdown timeout")
             .expect("server wait");

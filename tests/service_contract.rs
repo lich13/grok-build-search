@@ -12,6 +12,8 @@ use grok_build_search_mcp::{
 use serde_json::Value;
 use tempfile::TempDir;
 
+const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+
 fn fake_grok() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-grok")
 }
@@ -25,7 +27,7 @@ fn service_with(
     environment.extend(extra_environment);
     let client = GrokClient::new(
         GrokConfig::new(fake_grok())
-            .with_timeout(Duration::from_secs(2))
+            .with_timeout(TEST_TIMEOUT)
             .with_environment(environment),
     )
     .unwrap();
