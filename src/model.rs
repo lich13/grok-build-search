@@ -123,6 +123,18 @@ pub struct Source {
     pub url: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum WarningCode {
+    CleanupDeferred,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ToolWarning {
+    pub code: WarningCode,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ToolResponse {
     pub ok: bool,
@@ -133,6 +145,8 @@ pub struct ToolResponse {
     pub session_id: Option<String>,
     pub stop_reason: Option<String>,
     pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<ToolWarning>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<crate::ToolError>,
 }
@@ -148,8 +162,23 @@ impl ToolResponse {
             session_id: None,
             stop_reason: None,
             truncated: false,
+            warnings: Vec::new(),
             error: Some(error),
         }
+    }
+
+    pub(crate) fn add_cleanup_deferred_warning(&mut self) {
+        if self
+            .warnings
+            .iter()
+            .any(|warning| warning.code == WarningCode::CleanupDeferred)
+        {
+            return;
+        }
+        self.warnings.push(ToolWarning {
+            code: WarningCode::CleanupDeferred,
+            message: "Temporary Grok state could not be fully removed; cleanup will be retried on the next plugin invocation.".to_string(),
+        });
     }
 }
 
@@ -228,6 +257,7 @@ fn parse_grok_json_with_limit(
         session_id: parsed.session_id,
         stop_reason: parsed.stop_reason,
         truncated,
+        warnings: Vec::new(),
         error: None,
     })
 }

@@ -123,13 +123,28 @@ async fn fetch_uses_public_url_and_optional_instructions_via_prompt_file() {
 async fn doctor_defaults_to_version_probe_without_live_search() {
     let temp = TempDir::new().unwrap();
     let log_path = temp.path().join("must-not-exist.json");
-    let service = service_with(
-        "exit-failed",
-        [(
+    let runtime_root = temp.path().join("runtimes");
+    let stale = runtime_root.join("grok-build-search-runtime-abandoned");
+    std::fs::create_dir_all(&stale).unwrap();
+    std::fs::write(stale.join(".active.lock"), "").unwrap();
+    let environment = BTreeMap::from([
+        (
+            OsString::from("FAKE_GROK_MODE"),
+            OsString::from("exit-failed"),
+        ),
+        (
             OsString::from("FAKE_GROK_LOG"),
             log_path.clone().into_os_string(),
-        )],
-    );
+        ),
+    ]);
+    let client = GrokClient::new(
+        GrokConfig::new(fake_grok())
+            .with_timeout(TEST_TIMEOUT)
+            .with_runtime_root(&runtime_root)
+            .with_environment(environment),
+    )
+    .unwrap();
+    let service = SearchService::new(client);
 
     let output = service
         .doctor(DoctorInput { live_search: false })
@@ -140,7 +155,16 @@ async fn doctor_defaults_to_version_probe_without_live_search() {
     assert!(output.verified);
     assert!(output.answer.contains("0.2.93"));
     assert!(output.sources.is_empty());
+    assert!(output.warnings.is_empty());
     assert!(!log_path.exists());
+    assert!(!stale.exists());
+    assert!(std::fs::read_dir(runtime_root).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("grok-build-search-runtime-")
+    }));
 }
 
 #[tokio::test]

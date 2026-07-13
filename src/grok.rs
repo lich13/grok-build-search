@@ -10,15 +10,14 @@ use std::{
 };
 
 use semver::Version;
-use tempfile::TempDir;
 use tokio::{
     process::Command,
     sync::{OnceCell, Semaphore},
     time::timeout,
 };
 
-use crate::model::parse_grok_fetch_json;
 use crate::{ErrorCode, ResponseFormat, ToolError, ToolResponse, WebSearchInput, parse_grok_json};
+use crate::{model::parse_grok_fetch_json, runtime::RuntimeManager};
 
 const MINIMUM_GROK_VERSION: Version = Version::new(0, 2, 93);
 const NEXT_UNSUPPORTED_GROK_VERSION: Version = Version::new(0, 3, 0);
@@ -109,6 +108,7 @@ pub struct GrokConfig {
     timeout: Duration,
     max_concurrency: usize,
     environment: BTreeMap<OsString, OsString>,
+    runtime_root: Option<PathBuf>,
 }
 
 impl GrokConfig {
@@ -118,6 +118,7 @@ impl GrokConfig {
             timeout: DEFAULT_TIMEOUT,
             max_concurrency: DEFAULT_MAX_CONCURRENCY,
             environment: BTreeMap::new(),
+            runtime_root: None,
         }
     }
 
@@ -135,6 +136,11 @@ impl GrokConfig {
         self.environment = environment;
         self
     }
+
+    pub fn with_runtime_root(mut self, runtime_root: impl Into<PathBuf>) -> Self {
+        self.runtime_root = Some(runtime_root.into());
+        self
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -142,6 +148,7 @@ pub struct GrokClient {
     config: GrokConfig,
     semaphore: Arc<Semaphore>,
     version: Arc<OnceCell<Version>>,
+    runtime: RuntimeManager,
 }
 
 impl GrokClient {
@@ -164,10 +171,12 @@ impl GrokClient {
                 "configured Grok binary is missing or not executable",
             ));
         }
+        let runtime = RuntimeManager::new(&config.environment, config.runtime_root.clone());
         Ok(Self {
             semaphore: Arc::new(Semaphore::new(config.max_concurrency)),
             version: Arc::new(OnceCell::new()),
             config,
+            runtime,
         })
     }
 
@@ -220,6 +229,7 @@ impl GrokClient {
         query: &str,
         response_format: ResponseFormat,
     ) -> Result<ToolResponse, ToolError> {
+        let mut cleanup_deferred = self.cleanup_stale_runtimes();
         self.probe_version().await?;
         let validated = WebSearchInput {
             query: query.to_string(),
@@ -227,8 +237,13 @@ impl GrokClient {
         }
         .validate()?;
         let prompt = search_prompt(&validated.query, validated.response_format);
-        let stdout = self.run_prompt(&prompt).await?;
-        parse_grok_json(&stdout, validated.response_format)
+        let output = self.run_prompt(&prompt).await?;
+        cleanup_deferred |= output.cleanup_deferred;
+        let mut response = parse_grok_json(&output.stdout, validated.response_format)?;
+        if cleanup_deferred {
+            response.add_cleanup_deferred_warning();
+        }
+        Ok(response)
     }
 
     pub async fn fetch(
@@ -237,26 +252,29 @@ impl GrokClient {
         instructions: Option<&str>,
         max_chars: usize,
     ) -> Result<ToolResponse, ToolError> {
+        let mut cleanup_deferred = self.cleanup_stale_runtimes();
         self.probe_version().await?;
         let prompt = fetch_prompt(url, instructions, max_chars);
-        let stdout = self.run_prompt(&prompt).await?;
-        parse_grok_fetch_json(&stdout, max_chars, url)
+        let output = self.run_prompt(&prompt).await?;
+        cleanup_deferred |= output.cleanup_deferred;
+        let mut response = parse_grok_fetch_json(&output.stdout, max_chars, url)?;
+        if cleanup_deferred {
+            response.add_cleanup_deferred_warning();
+        }
+        Ok(response)
     }
 
-    async fn run_prompt(&self, prompt: &str) -> Result<String, ToolError> {
+    pub(crate) fn cleanup_stale_runtimes(&self) -> bool {
+        self.runtime.cleanup_stale()
+    }
+
+    async fn run_prompt(&self, prompt: &str) -> Result<PromptOutput, ToolError> {
         let _permit = self.acquire_permit().await?;
-        let workspace = tempfile::Builder::new()
-            .prefix("grok-build-search-")
-            .tempdir()
-            .map_err(|error| {
-                ToolError::new(
-                    ErrorCode::GrokExitFailed,
-                    format!("could not create isolated Grok working directory: {error}"),
-                )
-            })?;
+        let runtime = self.runtime.start()?;
+        let runtime_path = runtime.path().to_path_buf();
         let mut prompt_file = tempfile::Builder::new()
             .prefix("prompt-")
-            .tempfile_in(workspace.path())
+            .tempfile_in(&runtime_path)
             .map_err(|error| {
                 ToolError::new(
                     ErrorCode::GrokExitFailed,
@@ -278,24 +296,35 @@ impl GrokClient {
         })?;
 
         let mut command = self.base_command();
+        runtime.apply_environment(&mut command);
         add_guarded_arguments(&mut command);
         command
             .arg("--prompt-file")
             .arg(prompt_file.path())
-            .current_dir(workspace.path())
+            .current_dir(&runtime_path)
             .env("GROK_WEB_FETCH", "1");
-        let output = self.run_command(&mut command).await?;
-        if !output.status.success() {
-            return Err(exit_error(&output.stderr, Some(workspace.path())));
+        let result = self.run_command(&mut command).await.and_then(|output| {
+            if !output.status.success() {
+                return Err(exit_error(&output.stderr, Some(&runtime_path)));
+            }
+            if !output.stderr.is_empty() {
+                tracing::warn!(
+                    grok_stderr = %sanitize_stderr(&output.stderr, &runtime_path),
+                    "Grok completed with stderr output"
+                );
+            }
+            String::from_utf8(output.stdout).map_err(|_| {
+                ToolError::new(ErrorCode::BadGrokJson, "Grok stdout is not valid UTF-8")
+            })
+        });
+        let cleanup_deferred = runtime.finish();
+        match result {
+            Ok(stdout) => Ok(PromptOutput {
+                stdout,
+                cleanup_deferred,
+            }),
+            Err(error) => Err(error),
         }
-        if !output.stderr.is_empty() {
-            tracing::warn!(
-                grok_stderr = %sanitize_stderr(&output.stderr, &workspace),
-                "Grok completed with stderr output"
-            );
-        }
-        String::from_utf8(output.stdout)
-            .map_err(|_| ToolError::new(ErrorCode::BadGrokJson, "Grok stdout is not valid UTF-8"))
     }
 
     fn base_command(&self) -> Command {
@@ -406,9 +435,14 @@ fn exit_error(stderr: &[u8], redacted_path: Option<&Path>) -> ToolError {
     ToolError::new(ErrorCode::GrokExitFailed, message)
 }
 
-fn sanitize_stderr(stderr: &[u8], workspace: &TempDir) -> String {
+fn sanitize_stderr(stderr: &[u8], workspace: &Path) -> String {
     let sanitized = sanitize_bytes(stderr);
-    sanitized.replace(&workspace.path().to_string_lossy().to_string(), "<temp>")
+    sanitized.replace(&workspace.to_string_lossy().to_string(), "<temp>")
+}
+
+struct PromptOutput {
+    stdout: String,
+    cleanup_deferred: bool,
 }
 
 fn sanitize_bytes(input: &[u8]) -> String {

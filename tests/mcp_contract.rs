@@ -38,6 +38,13 @@ fn router_exposes_exactly_three_structured_tools() {
         );
         assert!(output["properties"]["verified"].is_object());
         assert!(output["properties"]["sources"].is_object());
+        assert!(
+            !output["required"]
+                .as_array()
+                .unwrap_or(&Vec::new())
+                .iter()
+                .any(|field| field == "warnings")
+        );
         match tool.name.as_ref() {
             "web_search" => {
                 assert_eq!(input["properties"]["query"]["minLength"], 1);

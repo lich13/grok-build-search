@@ -6,6 +6,7 @@ use std::{
     time::Duration,
 };
 
+use fs2::FileExt;
 use grok_build_search_mcp::{ErrorCode, GrokClient, GrokConfig, GrokLocator, ResponseFormat};
 use serde_json::Value;
 use tempfile::TempDir;
@@ -45,6 +46,41 @@ fn client_with(
             .with_environment(environment),
     )
     .unwrap()
+}
+
+fn client_with_runtime(
+    mode: &str,
+    timeout: Duration,
+    max_concurrency: usize,
+    runtime_root: &Path,
+    extra_environment: impl IntoIterator<Item = (OsString, OsString)>,
+) -> GrokClient {
+    let mut environment =
+        BTreeMap::from([(OsString::from("FAKE_GROK_MODE"), OsString::from(mode))]);
+    environment.extend(extra_environment);
+    GrokClient::new(
+        GrokConfig::new(fake_grok())
+            .with_timeout(timeout)
+            .with_max_concurrency(max_concurrency)
+            .with_runtime_root(runtime_root)
+            .with_environment(environment),
+    )
+    .unwrap()
+}
+
+fn runtime_entries(runtime_root: &Path) -> Vec<PathBuf> {
+    if !runtime_root.exists() {
+        return Vec::new();
+    }
+    fs::read_dir(runtime_root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("grok-build-search-runtime-"))
+        })
+        .collect()
 }
 
 #[test]
@@ -251,6 +287,222 @@ async fn search_uses_isolated_prompt_file_and_guarded_arguments() {
         ],
         "guardrails must use only rule prefixes accepted by Grok 0.2.93"
     );
+}
+
+#[tokio::test]
+async fn grok_state_and_configuration_are_isolated_from_the_real_home() {
+    let temp = TempDir::new().unwrap();
+    let real_home = temp.path().join("real-home");
+    let real_grok_home = real_home.join(".grok");
+    let runtime_root = temp.path().join("runtimes");
+    let log_path = temp.path().join("invocation.json");
+    fs::create_dir_all(real_grok_home.join("sessions/existing-session")).unwrap();
+    fs::create_dir_all(real_grok_home.join("memory/existing-workspace")).unwrap();
+    fs::write(real_grok_home.join("config.toml"), "model = \"grok-4.5\"\n").unwrap();
+    fs::write(real_grok_home.join("models_cache.json"), "{}\n").unwrap();
+    fs::write(real_grok_home.join("agent_id"), "agent-123\n").unwrap();
+    fs::write(real_grok_home.join("auth.json"), "{}\n").unwrap();
+
+    let client = client_with_runtime(
+        "search-success",
+        TEST_TIMEOUT,
+        2,
+        &runtime_root,
+        [
+            (OsString::from("HOME"), real_home.clone().into_os_string()),
+            (
+                OsString::from("FAKE_GROK_LOG"),
+                log_path.clone().into_os_string(),
+            ),
+            (OsString::from("FAKE_GROK_WRITE_STATE"), OsString::from("1")),
+        ],
+    );
+
+    let output = client
+        .search("isolated state", ResponseFormat::Concise)
+        .await
+        .expect("isolated search should succeed");
+
+    assert!(output.warnings.is_empty());
+    let invocation: Value = serde_json::from_slice(&fs::read(log_path).unwrap()).unwrap();
+    let isolated_home = PathBuf::from(invocation["grok_home"].as_str().unwrap());
+    assert_eq!(invocation["home"], invocation["grok_home"]);
+    assert!(isolated_home.starts_with(&runtime_root));
+    assert_eq!(
+        invocation["cwd"].as_str().unwrap(),
+        invocation["grok_home_resolved"].as_str().unwrap()
+    );
+    assert_eq!(invocation["grok_storage_mode"], "local");
+    assert_eq!(
+        invocation["grok_auth_path"].as_str().unwrap(),
+        real_grok_home.join("auth.json").to_string_lossy()
+    );
+    assert_eq!(invocation["grok_config"], "model = \"grok-4.5\"\n");
+    assert!(real_grok_home.join("sessions/existing-session").is_dir());
+    assert!(real_grok_home.join("memory/existing-workspace").is_dir());
+    assert!(!real_grok_home.join("sessions/fake-session").exists());
+    assert!(!real_grok_home.join("prompt_history.jsonl").exists());
+    assert!(!real_grok_home.join("memory/fake-workspace").exists());
+    assert!(!real_grok_home.join("logs").exists());
+    assert!(runtime_entries(&runtime_root).is_empty());
+}
+
+#[tokio::test]
+async fn runtime_is_removed_after_backend_failure_and_timeout() {
+    let cases = [
+        ("exit-failed", TEST_TIMEOUT, ErrorCode::GrokExitFailed),
+        ("sleep", Duration::from_millis(20), ErrorCode::GrokTimeout),
+    ];
+
+    for (mode, timeout, expected) in cases {
+        let temp = TempDir::new().unwrap();
+        let runtime_root = temp.path().join("runtimes");
+        let client = client_with_runtime(
+            mode,
+            timeout,
+            2,
+            &runtime_root,
+            [
+                (OsString::from("FAKE_GROK_WRITE_STATE"), OsString::from("1")),
+                (
+                    OsString::from("FAKE_GROK_SLEEP_SECONDS"),
+                    OsString::from("1"),
+                ),
+            ],
+        );
+
+        let error = client
+            .search("cleanup after failure", ResponseFormat::Concise)
+            .await
+            .expect_err("mode should fail");
+
+        assert_eq!(error.code, expected, "unexpected error for {mode}");
+        assert!(
+            runtime_entries(&runtime_root).is_empty(),
+            "runtime leaked after {mode}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_calls_do_not_remove_each_others_active_runtime() {
+    let temp = TempDir::new().unwrap();
+    let runtime_root = temp.path().join("runtimes");
+    let client = client_with_runtime(
+        "sleep",
+        TEST_TIMEOUT,
+        2,
+        &runtime_root,
+        [(
+            OsString::from("FAKE_GROK_SLEEP_SECONDS"),
+            OsString::from("0.30"),
+        )],
+    );
+    let first_client = client.clone();
+    let second_client = client.clone();
+    let first = tokio::spawn(async move {
+        first_client
+            .search("first active runtime", ResponseFormat::Concise)
+            .await
+    });
+    let second = tokio::spawn(async move {
+        second_client
+            .search("second active runtime", ResponseFormat::Concise)
+            .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if runtime_entries(&runtime_root).len() == 2 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("both runtimes should coexist while calls are active");
+
+    first.await.unwrap().unwrap();
+    second.await.unwrap().unwrap();
+    assert!(runtime_entries(&runtime_root).is_empty());
+}
+
+#[tokio::test]
+async fn abandoned_runtime_is_removed_before_the_next_call() {
+    let temp = TempDir::new().unwrap();
+    let runtime_root = temp.path().join("runtimes");
+    let stale = runtime_root.join("grok-build-search-runtime-abandoned");
+    fs::create_dir_all(&stale).unwrap();
+    fs::write(stale.join(".active.lock"), "").unwrap();
+    fs::write(stale.join("orphaned-session"), "state").unwrap();
+    let client = client_with_runtime("search-success", TEST_TIMEOUT, 2, &runtime_root, []);
+
+    client
+        .search("trigger stale cleanup", ResponseFormat::Concise)
+        .await
+        .unwrap();
+
+    assert!(!stale.exists());
+    assert!(runtime_entries(&runtime_root).is_empty());
+}
+
+#[tokio::test]
+async fn stale_cleanup_skips_a_runtime_with_an_active_lock() {
+    let temp = TempDir::new().unwrap();
+    let runtime_root = temp.path().join("runtimes");
+    let active = runtime_root.join("grok-build-search-runtime-active");
+    fs::create_dir_all(&active).unwrap();
+    let lock = fs::File::create(active.join(".active.lock")).unwrap();
+    lock.lock_exclusive().unwrap();
+    let client = client_with_runtime("search-success", TEST_TIMEOUT, 2, &runtime_root, []);
+
+    client
+        .search("preserve active runtime", ResponseFormat::Concise)
+        .await
+        .unwrap();
+
+    assert!(active.is_dir());
+    lock.unlock().unwrap();
+    fs::remove_dir_all(active).unwrap();
+}
+
+#[tokio::test]
+async fn cleanup_failure_adds_a_path_free_warning_and_is_retried() {
+    let temp = TempDir::new().unwrap();
+    let runtime_root = temp.path().join("runtimes");
+    let client = client_with_runtime(
+        "search-success",
+        TEST_TIMEOUT,
+        2,
+        &runtime_root,
+        [(
+            OsString::from("FAKE_GROK_BREAK_RUNTIME"),
+            OsString::from("1"),
+        )],
+    );
+
+    let output = client
+        .search("deferred cleanup", ResponseFormat::Concise)
+        .await
+        .expect("cleanup failure must not discard a successful search");
+
+    assert_eq!(output.warnings.len(), 1);
+    assert_eq!(
+        serde_json::to_value(output.warnings[0].code).unwrap(),
+        "CLEANUP_DEFERRED"
+    );
+    let serialized = serde_json::to_string(&output).unwrap();
+    assert!(serialized.contains("cleanup will be retried on the next plugin invocation"));
+    assert!(!serialized.contains(runtime_root.to_string_lossy().as_ref()));
+    assert_eq!(runtime_entries(&runtime_root).len(), 1);
+
+    let retry_client = client_with_runtime("search-success", TEST_TIMEOUT, 2, &runtime_root, []);
+    let retry_output = retry_client
+        .search("retry deferred cleanup", ResponseFormat::Concise)
+        .await
+        .unwrap();
+    assert!(retry_output.warnings.is_empty());
+    assert!(runtime_entries(&runtime_root).is_empty());
 }
 
 #[tokio::test]

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -41,6 +42,38 @@ def prompt_from_args(arguments: list[str]) -> str:
     return prompt_path.read_text(encoding="utf-8") if prompt_path else ""
 
 
+def write_fake_grok_state() -> None:
+    if os.environ.get("FAKE_GROK_WRITE_STATE") != "1":
+        return
+    grok_home = Path(os.environ["GROK_HOME"])
+    files = {
+        grok_home / "sessions" / "fake-session" / "session.json": "{}\n",
+        grok_home / "prompt_history.jsonl": '{"prompt":"test"}\n',
+        grok_home / "memory" / "fake-workspace" / "index.json": "{}\n",
+        grok_home / "logs" / "fake.log": "fake log\n",
+    }
+    for path, content in files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+
+def break_runtime_cleanup() -> None:
+    if os.environ.get("FAKE_GROK_BREAK_RUNTIME") != "1":
+        return
+    runtime = Path(os.environ["GROK_HOME"])
+    os.chdir(runtime.parent)
+    shutil.rmtree(runtime)
+    runtime.write_text("blocks remove_dir_all", encoding="utf-8")
+
+
+def grok_config_text() -> str | None:
+    grok_home = os.environ.get("GROK_HOME")
+    if not grok_home:
+        return None
+    config = Path(grok_home) / "config.toml"
+    return config.read_text(encoding="utf-8") if config.is_file() else None
+
+
 def main() -> int:
     arguments = sys.argv[1:]
     if arguments == ["--version"]:
@@ -50,6 +83,7 @@ def main() -> int:
     mode = os.environ.get("FAKE_GROK_MODE", "search-success")
     prompt_path = prompt_path_from_args(arguments)
     prompt = prompt_from_args(arguments)
+    write_fake_grok_state()
     log_path = os.environ.get("FAKE_GROK_LOG")
     if log_path:
         Path(log_path).write_text(
@@ -58,7 +92,17 @@ def main() -> int:
                     "args": arguments,
                     "anthropic_api_key": os.environ.get("ANTHROPIC_API_KEY"),
                     "cwd": str(Path.cwd()),
+                    "grok_auth_path": os.environ.get("GROK_AUTH_PATH"),
+                    "grok_config": grok_config_text(),
+                    "grok_home": os.environ.get("GROK_HOME"),
+                    "grok_home_resolved": (
+                        str(Path(os.environ["GROK_HOME"]).resolve())
+                        if os.environ.get("GROK_HOME")
+                        else None
+                    ),
+                    "grok_storage_mode": os.environ.get("GROK_STORAGE_MODE"),
                     "grok_web_fetch": os.environ.get("GROK_WEB_FETCH"),
+                    "home": os.environ.get("HOME"),
                     "mode": mode,
                     "openai_api_key": os.environ.get("OPENAI_API_KEY"),
                     "prompt": prompt,
@@ -72,6 +116,8 @@ def main() -> int:
             ),
             encoding="utf-8",
         )
+
+    break_runtime_cleanup()
 
     if mode == "bad-json":
         print("not-json")

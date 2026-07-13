@@ -37,6 +37,7 @@ fn concise_grok_json_is_parsed_without_thought_and_deduplicates_sources() {
 
     assert!(output.ok);
     assert!(output.verified);
+    assert!(output.warnings.is_empty());
     assert_eq!(output.session_id.as_deref(), Some("session-1"));
     assert_eq!(output.stop_reason.as_deref(), Some("end_turn"));
     assert_eq!(output.sources.len(), 2);
@@ -44,6 +45,13 @@ fn concise_grok_json_is_parsed_without_thought_and_deduplicates_sources() {
         !serde_json::to_string(&output)
             .unwrap()
             .contains("must never escape")
+    );
+    assert!(
+        !serde_json::to_value(&output)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("warnings")
     );
 }
 

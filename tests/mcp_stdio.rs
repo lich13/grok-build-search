@@ -83,7 +83,7 @@ impl TestServer {
             "params": {
                 "protocolVersion": "2025-11-25",
                 "capabilities": {},
-                "clientInfo": { "name": "integration-test", "version": "0.1.2" }
+                "clientInfo": { "name": "integration-test", "version": "0.1.3" }
             }
         }))
         .await;

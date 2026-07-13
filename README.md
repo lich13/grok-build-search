@@ -59,7 +59,7 @@ GitHub Release binaries, downloads the matching `SHA256SUMS`, verifies SHA-256,
 and caches the verified executable under:
 
 ```text
-${XDG_CACHE_HOME:-$HOME/.cache}/grok-build-search/v0.1.2/
+${XDG_CACHE_HOME:-$HOME/.cache}/grok-build-search/v0.1.3/
 ```
 
 The launcher validates the cached binary on every start. A corrupt or modified
@@ -73,8 +73,16 @@ Grok process with:
 - a 120-second timeout and a maximum of two concurrent processes;
 - read-only Grok sandboxing and explicit file/terminal tool denials;
 - a private `0600` prompt file instead of query text in process arguments;
+- a unique temporary `GROK_HOME` and `HOME`, while the existing authentication
+  file and configured default model remain in use;
 - common AI API-key environment variables removed from the child process;
 - no retries and no Grok subagents, memory, plans, or automatic updates.
+
+The temporary Grok state, including sessions, prompt history, memory indexes,
+and logs, is removed after every operation. Concurrent operations hold separate
+activity locks, and abandoned state is retried at the start of the next tool
+call. A successful response includes a `CLEANUP_DEFERRED` warning if temporary
+state could not be removed immediately.
 
 `web_fetch` accepts only public `http` or `https` targets. It rejects URL
 userinfo, localhost names, and local, private, documentation, multicast, or
