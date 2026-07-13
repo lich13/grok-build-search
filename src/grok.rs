@@ -25,7 +25,6 @@ use crate::{model::parse_grok_fetch_json, runtime::RuntimeManager};
 
 const MINIMUM_GROK_VERSION: Version = Version::new(0, 2, 93);
 const NEXT_UNSUPPORTED_GROK_VERSION: Version = Version::new(0, 3, 0);
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 const PROCESS_REAP_TIMEOUT: Duration = Duration::from_secs(1);
 const DEFAULT_MAX_CONCURRENCY: usize = 2;
 const MAX_STDERR_CHARS: usize = 2_000;
@@ -110,7 +109,7 @@ fn is_executable(path: &Path) -> bool {
 #[derive(Debug, Clone)]
 pub struct GrokConfig {
     binary: PathBuf,
-    timeout: Duration,
+    timeout: Option<Duration>,
     max_concurrency: usize,
     environment: BTreeMap<OsString, OsString>,
     runtime_root: Option<PathBuf>,
@@ -120,7 +119,7 @@ impl GrokConfig {
     pub fn new(binary: impl Into<PathBuf>) -> Self {
         Self {
             binary: binary.into(),
-            timeout: DEFAULT_TIMEOUT,
+            timeout: None,
             max_concurrency: DEFAULT_MAX_CONCURRENCY,
             environment: BTreeMap::new(),
             runtime_root: None,
@@ -128,7 +127,7 @@ impl GrokConfig {
     }
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = timeout;
+        self.timeout = Some(timeout);
         self
     }
 
@@ -164,7 +163,7 @@ impl GrokClient {
                 "Grok process concurrency must be at least one",
             ));
         }
-        if config.timeout.is_zero() {
+        if config.timeout.is_some_and(|timeout| timeout.is_zero()) {
             return Err(ToolError::new(
                 ErrorCode::GrokTimeout,
                 "Grok process timeout must be greater than zero",
@@ -355,7 +354,11 @@ impl GrokClient {
         let mut output_task =
             OutputTaskGuard::new(tokio::spawn(async move { child.wait_with_output().await }));
         let mut process_group = ProcessGroupGuard::new(pid);
-        match timeout(self.config.timeout, output_task.task()).await {
+        let output = match self.config.timeout {
+            Some(process_timeout) => timeout(process_timeout, output_task.task()).await,
+            None => Ok(output_task.task().await),
+        };
+        match output {
             Ok(Ok(Ok(output))) => {
                 process_group.terminate();
                 Ok(output)
@@ -392,7 +395,10 @@ impl GrokClient {
                     ErrorCode::GrokTimeout,
                     format!(
                         "Grok process exceeded the {} second timeout",
-                        self.config.timeout.as_secs_f64()
+                        self.config
+                            .timeout
+                            .expect("elapsed result requires a configured timeout")
+                            .as_secs_f64()
                     ),
                 ))
             }
@@ -614,4 +620,16 @@ fn sanitize_bytes(input: &[u8]) -> String {
         .chars()
         .take(MAX_STDERR_CHARS)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_has_no_process_deadline() {
+        let config = GrokConfig::new("grok");
+
+        assert_eq!(config.timeout, None);
+    }
 }

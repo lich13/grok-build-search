@@ -62,12 +62,15 @@ class RepositoryLayoutTests(unittest.TestCase):
             "web_fetch",
             "doctor",
             "SHA-256",
-            "grok-build-search/v0.1.4/",
+            "grok-build-search/v0.1.5/",
+            "no plugin-level process deadline",
+            "365-day Codex MCP host ceiling",
             "temporary `GROK_HOME`",
             "removed after every operation",
             "not affiliated with or endorsed by xAI or OpenAI",
         ]:
             self.assertIn(required, normalized)
+        self.assertNotIn("120-second timeout", normalized)
 
     def test_rust_package_metadata_is_pinned(self) -> None:
         cargo_toml = ROOT / "Cargo.toml"
@@ -76,7 +79,7 @@ class RepositoryLayoutTests(unittest.TestCase):
         metadata = tomllib.loads(cargo_toml.read_text(encoding="utf-8"))
         package = metadata["package"]
         self.assertEqual(package["name"], "grok-build-search-mcp")
-        self.assertEqual(package["version"], "0.1.4")
+        self.assertEqual(package["version"], "0.1.5")
         self.assertEqual(package["edition"], "2024")
         self.assertEqual(package["rust-version"], "1.94.1")
 
@@ -94,7 +97,7 @@ class RepositoryLayoutTests(unittest.TestCase):
         )
 
         self.assertEqual(manifest["name"], "grok-build-search")
-        self.assertEqual(manifest["version"], "0.1.4")
+        self.assertEqual(manifest["version"], "0.1.5")
         self.assertEqual(manifest["author"]["name"], "lich13")
         self.assertEqual(manifest["license"], "MIT")
         self.assertEqual(manifest["skills"], "./skills/")
@@ -110,7 +113,7 @@ class RepositoryLayoutTests(unittest.TestCase):
         self.assertEqual(server["args"], [])
         self.assertEqual(server["cwd"], ".")
         self.assertEqual(server["startup_timeout_sec"], 620)
-        self.assertEqual(server["tool_timeout_sec"], 150)
+        self.assertEqual(server["tool_timeout_sec"], 31_536_000)
         self.assertEqual(server["env_vars"], [
             "GROK_BUILD_SEARCH_MCP_BIN",
             "GROK_BUILD_SEARCH_CACHE_DIR",

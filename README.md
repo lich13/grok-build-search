@@ -59,7 +59,7 @@ GitHub Release binaries, downloads the matching `SHA256SUMS`, verifies SHA-256,
 and caches the verified executable under:
 
 ```text
-${XDG_CACHE_HOME:-$HOME/.cache}/grok-build-search/v0.1.4/
+${XDG_CACHE_HOME:-$HOME/.cache}/grok-build-search/v0.1.5/
 ```
 
 The launcher validates the cached binary on every start. A corrupt or modified
@@ -70,13 +70,17 @@ The MCP server then locates `grok` through `GROK_BIN`, `PATH`,
 `~/.local/bin/grok`, or `~/.grok/bin/grok`. Each operation runs in a separate
 Grok process with:
 
-- a 120-second timeout and a maximum of two concurrent processes;
+- no plugin-level process deadline, a 365-day Codex MCP host ceiling, and a
+  maximum of two concurrent processes;
 - read-only Grok sandboxing and explicit file/terminal tool denials;
 - a private `0600` prompt file instead of query text in process arguments;
 - a unique temporary `GROK_HOME` and `HOME`, while the existing authentication
   file and configured default model remain in use;
 - common AI API-key environment variables removed from the child process;
 - no retries and no Grok subagents, memory, plans, or automatic updates.
+
+Grok runs until it exits or the MCP call is cancelled. Cancellation terminates
+the Grok process group before the isolated runtime is removed.
 
 The temporary Grok state, including sessions, prompt history, memory indexes,
 and logs, is removed after every operation. Concurrent operations hold separate

@@ -74,6 +74,22 @@ fn client_with_runtime(
     .unwrap()
 }
 
+fn client_without_timeout_with_runtime(
+    mode: &str,
+    runtime_root: &Path,
+    extra_environment: impl IntoIterator<Item = (OsString, OsString)>,
+) -> GrokClient {
+    let mut environment =
+        BTreeMap::from([(OsString::from("FAKE_GROK_MODE"), OsString::from(mode))]);
+    environment.extend(extra_environment);
+    GrokClient::new(
+        GrokConfig::new(fake_grok())
+            .with_runtime_root(runtime_root)
+            .with_environment(environment),
+    )
+    .unwrap()
+}
+
 fn runtime_entries(runtime_root: &Path) -> Vec<PathBuf> {
     if !runtime_root.exists() {
         return Vec::new();
@@ -579,6 +595,32 @@ async fn relative_grok_home_and_auth_path_are_resolved_before_runtime_isolation(
 }
 
 #[tokio::test]
+async fn default_client_waits_for_delayed_success_without_process_timeout() {
+    let temp = TempDir::new().unwrap();
+    let runtime_root = temp.path().join("runtimes");
+    let client = client_without_timeout_with_runtime(
+        "sleep",
+        &runtime_root,
+        [(
+            OsString::from("FAKE_GROK_SLEEP_SECONDS"),
+            OsString::from("0.10"),
+        )],
+    );
+
+    let output = tokio::time::timeout(
+        Duration::from_secs(2),
+        client.search("wait without deadline", ResponseFormat::Concise),
+    )
+    .await
+    .expect("test harness timed out waiting for fake Grok")
+    .expect("default client must wait for Grok to finish");
+
+    assert!(output.ok);
+    assert_eq!(output.sources[0].url, "https://example.com/sleep");
+    assert!(runtime_entries(&runtime_root).is_empty());
+}
+
+#[tokio::test]
 async fn runtime_is_removed_after_backend_failure_and_timeout() {
     let cases = [
         ("exit-failed", TEST_TIMEOUT, ErrorCode::GrokExitFailed),
@@ -752,10 +794,8 @@ async fn cancelling_a_running_search_terminates_the_grok_process_group() {
     let temp = TempDir::new().unwrap();
     let runtime_root = temp.path().join("runtimes");
     let pid_log = temp.path().join("pids.json");
-    let client = client_with_runtime(
+    let client = client_without_timeout_with_runtime(
         "spawn-descendant",
-        TEST_TIMEOUT,
-        2,
         &runtime_root,
         [(
             OsString::from("FAKE_GROK_PID_LOG"),
