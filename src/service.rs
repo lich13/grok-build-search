@@ -18,7 +18,7 @@ impl SearchService {
     }
 
     pub async fn web_search(&self, input: WebSearchInput) -> Result<ToolResponse, ToolError> {
-        let cleanup_deferred = self.client()?.cleanup_stale_runtimes();
+        let cleanup_deferred = self.client()?.cleanup_stale_runtimes().await;
         let validated = input.validate()?;
         let mut response = self
             .client()?
@@ -31,7 +31,7 @@ impl SearchService {
     }
 
     pub async fn web_fetch(&self, input: WebFetchInput) -> Result<ToolResponse, ToolError> {
-        let cleanup_deferred = self.client()?.cleanup_stale_runtimes();
+        let cleanup_deferred = self.client()?.cleanup_stale_runtimes().await;
         let validated = input.validate()?;
         let url = validate_public_url(&validated.url).await?;
         let mut response = self
@@ -50,8 +50,8 @@ impl SearchService {
 
     pub async fn doctor(&self, input: DoctorInput) -> Result<ToolResponse, ToolError> {
         let client = self.client()?;
-        let cleanup_deferred = client.cleanup_stale_runtimes();
-        let version = client.probe_version().await?;
+        let cleanup_deferred = client.cleanup_stale_runtimes().await;
+        let (version, version_cleanup_deferred) = client.probe_version_with_cleanup().await?;
         if input.live_search {
             let mut response = client
                 .search(
@@ -79,7 +79,7 @@ impl SearchService {
             warnings: Vec::new(),
             error: None,
         };
-        if cleanup_deferred {
+        if cleanup_deferred || version_cleanup_deferred {
             response.add_cleanup_deferred_warning();
         }
         Ok(response)

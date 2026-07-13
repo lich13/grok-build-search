@@ -59,7 +59,7 @@ GitHub Release binaries, downloads the matching `SHA256SUMS`, verifies SHA-256,
 and caches the verified executable under:
 
 ```text
-${XDG_CACHE_HOME:-$HOME/.cache}/grok-build-search/v0.1.3/
+${XDG_CACHE_HOME:-$HOME/.cache}/grok-build-search/v0.1.4/
 ```
 
 The launcher validates the cached binary on every start. A corrupt or modified

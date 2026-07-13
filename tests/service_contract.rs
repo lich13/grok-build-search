@@ -12,6 +12,9 @@ use grok_build_search_mcp::{
 use serde_json::Value;
 use tempfile::TempDir;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 const TEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn fake_grok() -> PathBuf {
@@ -124,9 +127,20 @@ async fn doctor_defaults_to_version_probe_without_live_search() {
     let temp = TempDir::new().unwrap();
     let log_path = temp.path().join("must-not-exist.json");
     let runtime_root = temp.path().join("runtimes");
+    #[cfg(unix)]
+    {
+        std::fs::create_dir(&runtime_root).unwrap();
+        std::fs::set_permissions(&runtime_root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
     let stale = runtime_root.join("grok-build-search-runtime-abandoned");
     std::fs::create_dir_all(&stale).unwrap();
     std::fs::write(stale.join(".active.lock"), "").unwrap();
+    #[cfg(unix)]
+    std::fs::set_permissions(
+        stale.join(".active.lock"),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
     let environment = BTreeMap::from([
         (
             OsString::from("FAKE_GROK_MODE"),
@@ -165,6 +179,55 @@ async fn doctor_defaults_to_version_probe_without_live_search() {
             .to_string_lossy()
             .starts_with("grok-build-search-runtime-")
     }));
+}
+
+#[tokio::test]
+async fn doctor_reports_deferred_cleanup_from_an_isolated_version_probe() {
+    let temp = TempDir::new().unwrap();
+    let runtime_root = temp.path().join("runtimes");
+    let environment = BTreeMap::from([
+        (
+            OsString::from("FAKE_GROK_MODE"),
+            OsString::from("search-success"),
+        ),
+        (
+            OsString::from("FAKE_GROK_BREAK_RUNTIME"),
+            OsString::from("1"),
+        ),
+    ]);
+    let client = GrokClient::new(
+        GrokConfig::new(fake_grok())
+            .with_timeout(TEST_TIMEOUT)
+            .with_runtime_root(&runtime_root)
+            .with_environment(environment),
+    )
+    .unwrap();
+    let service = SearchService::new(client);
+
+    let output = service
+        .doctor(DoctorInput { live_search: false })
+        .await
+        .expect("version probe should preserve its successful doctor response");
+
+    assert!(output.ok);
+    assert_eq!(output.warnings.len(), 1);
+    assert_eq!(
+        serde_json::to_value(output.warnings[0].code).unwrap(),
+        "CLEANUP_DEFERRED"
+    );
+    let serialized = serde_json::to_string(&output).unwrap();
+    assert!(serialized.contains("cleanup will be retried on the next plugin invocation"));
+    assert!(!serialized.contains(runtime_root.to_string_lossy().as_ref()));
+    for entry in std::fs::read_dir(&runtime_root).unwrap() {
+        let path = entry.unwrap().path();
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("grok-build-search-runtime-"))
+        {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
 }
 
 #[tokio::test]

@@ -4,12 +4,20 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
 
 
 VERSION = "grok 0.2.93 (f00f96316d4b)"
+
+
+def path_mode(path: Path) -> str | None:
+    try:
+        return f"{path.stat().st_mode & 0o777:04o}"
+    except FileNotFoundError:
+        return None
 
 
 def log_timing_event(event: str) -> None:
@@ -56,6 +64,12 @@ def write_fake_grok_state() -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
 
+    many_files = int(os.environ.get("FAKE_GROK_MANY_FILES", "0"))
+    bulk = grok_home / "bulk"
+    bulk.mkdir(exist_ok=True)
+    for index in range(many_files):
+        (bulk / f"state-{index:05d}").write_text("state\n", encoding="utf-8")
+
 
 def break_runtime_cleanup() -> None:
     if os.environ.get("FAKE_GROK_BREAK_RUNTIME") != "1":
@@ -74,9 +88,34 @@ def grok_config_text() -> str | None:
     return config.read_text(encoding="utf-8") if config.is_file() else None
 
 
+def write_pid_log(path: str, parent: int, child: int) -> None:
+    pid_path = Path(path)
+    temporary_pid_path = pid_path.with_name(f".{pid_path.name}.tmp")
+    temporary_pid_path.write_text(
+        json.dumps({"parent": parent, "child": child}), encoding="utf-8"
+    )
+    temporary_pid_path.replace(pid_path)
+
+
 def main() -> int:
     arguments = sys.argv[1:]
     if arguments == ["--version"]:
+        if os.environ.get("FAKE_GROK_WRITE_STATE_ON_VERSION") == "1":
+            write_fake_grok_state()
+        break_runtime_cleanup()
+        version_log = os.environ.get("FAKE_GROK_VERSION_LOG")
+        if version_log:
+            grok_home = Path(os.environ["GROK_HOME"])
+            Path(version_log).write_text(
+                json.dumps(
+                    {
+                        "grok_home": str(grok_home),
+                        "grok_home_mode": path_mode(grok_home),
+                        "home": os.environ.get("HOME"),
+                    }
+                ),
+                encoding="utf-8",
+            )
         print(os.environ.get("FAKE_GROK_VERSION", VERSION))
         return 0
 
@@ -95,6 +134,16 @@ def main() -> int:
                     "grok_auth_path": os.environ.get("GROK_AUTH_PATH"),
                     "grok_config": grok_config_text(),
                     "grok_home": os.environ.get("GROK_HOME"),
+                    "grok_home_mode": (
+                        path_mode(Path(os.environ["GROK_HOME"]))
+                        if os.environ.get("GROK_HOME")
+                        else None
+                    ),
+                    "grok_home_parent_mode": (
+                        path_mode(Path(os.environ["GROK_HOME"]).parent)
+                        if os.environ.get("GROK_HOME")
+                        else None
+                    ),
                     "grok_home_resolved": (
                         str(Path(os.environ["GROK_HOME"]).resolve())
                         if os.environ.get("GROK_HOME")
@@ -158,6 +207,61 @@ def main() -> int:
             )
         )
         return 0
+    if mode == "spawn-descendant":
+        child = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import time; time.sleep(60)",
+            ]
+        )
+        pid_log = os.environ.get("FAKE_GROK_PID_LOG")
+        if pid_log:
+            write_pid_log(pid_log, os.getpid(), child.pid)
+        time.sleep(60)
+        return 0
+    if mode == "success-with-descendant":
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        pid_log = os.environ.get("FAKE_GROK_PID_LOG")
+        if pid_log:
+            write_pid_log(pid_log, os.getpid(), child.pid)
+        print(
+            json.dumps(
+                {
+                    "text": "Successful parent response. https://example.com/success",
+                    "stopReason": "end_turn",
+                    "sessionId": "fake-session-id",
+                    "requestId": "fake-request-id",
+                }
+            )
+        )
+        return 0
+    if mode == "escape-process-group":
+        pid_log = os.environ.get("FAKE_GROK_PID_LOG")
+        if not pid_log:
+            print("FAKE_GROK_PID_LOG is required", file=sys.stderr)
+            return 2
+        child_script = (
+            "import json, os, pathlib, sys, time; "
+            "os.setsid(); "
+            "path = pathlib.Path(sys.argv[1]); "
+            "temporary = path.with_name('.' + path.name + '.tmp'); "
+            "temporary.write_text("
+            "json.dumps({'parent': int(sys.argv[2]), 'child': os.getpid()}), "
+            "encoding='utf-8'); "
+            "temporary.replace(path); "
+            "time.sleep(60)"
+        )
+        subprocess.Popen(
+            [sys.executable, "-c", child_script, pid_log, str(os.getpid())]
+        )
+        time.sleep(60)
+        return 0
     if mode == "stderr-warning":
         print("simulated configuration warning", file=sys.stderr)
         print(
@@ -175,6 +279,10 @@ def main() -> int:
     if mode != "search-success":
         print(f"unsupported fake mode: {mode}", file=sys.stderr)
         return 2
+
+    done_file = os.environ.get("FAKE_GROK_DONE_FILE")
+    if done_file:
+        Path(done_file).write_text("done\n", encoding="utf-8")
 
     print(
         json.dumps(

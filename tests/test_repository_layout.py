@@ -25,6 +25,9 @@ class RepositoryLayoutTests(unittest.TestCase):
             "cargo clippy --all-targets --locked -- -D warnings",
             "cargo test --all-targets --locked",
             "python3 -m unittest discover -s tests -p 'test_*.py'",
+            "matrix:",
+            "ubuntu-22.04",
+            "macos-14",
         ]:
             self.assertIn(required, ci)
 
@@ -59,7 +62,7 @@ class RepositoryLayoutTests(unittest.TestCase):
             "web_fetch",
             "doctor",
             "SHA-256",
-            "grok-build-search/v0.1.3/",
+            "grok-build-search/v0.1.4/",
             "temporary `GROK_HOME`",
             "removed after every operation",
             "not affiliated with or endorsed by xAI or OpenAI",
@@ -73,7 +76,7 @@ class RepositoryLayoutTests(unittest.TestCase):
         metadata = tomllib.loads(cargo_toml.read_text(encoding="utf-8"))
         package = metadata["package"]
         self.assertEqual(package["name"], "grok-build-search-mcp")
-        self.assertEqual(package["version"], "0.1.3")
+        self.assertEqual(package["version"], "0.1.4")
         self.assertEqual(package["edition"], "2024")
         self.assertEqual(package["rust-version"], "1.94.1")
 
@@ -91,7 +94,7 @@ class RepositoryLayoutTests(unittest.TestCase):
         )
 
         self.assertEqual(manifest["name"], "grok-build-search")
-        self.assertEqual(manifest["version"], "0.1.3")
+        self.assertEqual(manifest["version"], "0.1.4")
         self.assertEqual(manifest["author"]["name"], "lich13")
         self.assertEqual(manifest["license"], "MIT")
         self.assertEqual(manifest["skills"], "./skills/")

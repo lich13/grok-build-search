@@ -2,10 +2,13 @@ use std::{
     collections::BTreeMap,
     ffi::OsString,
     fs,
-    io::Write,
+    io::{self, Write},
     path::{Path, PathBuf},
     process::Stdio,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -13,6 +16,7 @@ use semver::Version;
 use tokio::{
     process::Command,
     sync::{OnceCell, Semaphore},
+    task::JoinHandle,
     time::timeout,
 };
 
@@ -22,6 +26,7 @@ use crate::{model::parse_grok_fetch_json, runtime::RuntimeManager};
 const MINIMUM_GROK_VERSION: Version = Version::new(0, 2, 93);
 const NEXT_UNSUPPORTED_GROK_VERSION: Version = Version::new(0, 3, 0);
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
+const PROCESS_REAP_TIMEOUT: Duration = Duration::from_secs(1);
 const DEFAULT_MAX_CONCURRENCY: usize = 2;
 const MAX_STDERR_CHARS: usize = 2_000;
 const DENY_RULES: &[&str] = &[
@@ -147,7 +152,7 @@ impl GrokConfig {
 pub struct GrokClient {
     config: GrokConfig,
     semaphore: Arc<Semaphore>,
-    version: Arc<OnceCell<Version>>,
+    version: Arc<OnceCell<CachedVersionProbe>>,
     runtime: RuntimeManager,
 }
 
@@ -184,44 +189,33 @@ impl GrokClient {
         self.version
             .get_or_try_init(|| self.detect_version())
             .await
-            .cloned()
+            .map(|probe| probe.version.clone())
     }
 
-    async fn detect_version(&self) -> Result<Version, ToolError> {
+    pub(crate) async fn probe_version_with_cleanup(&self) -> Result<(Version, bool), ToolError> {
+        self.version
+            .get_or_try_init(|| self.detect_version())
+            .await
+            .map(|probe| {
+                (
+                    probe.version.clone(),
+                    probe.cleanup_deferred.swap(false, Ordering::AcqRel),
+                )
+            })
+    }
+
+    async fn detect_version(&self) -> Result<CachedVersionProbe, ToolError> {
         let _permit = self.acquire_permit().await?;
+        let runtime = self.runtime.start().await?;
         let mut command = self.base_command();
+        runtime.apply_environment(&mut command);
         command.arg("--version");
-        let output = self.run_command(&mut command).await?;
-        if !output.status.success() {
-            return Err(exit_error(&output.stderr, None));
-        }
-        let stdout = String::from_utf8(output.stdout).map_err(|_| {
-            ToolError::new(
-                ErrorCode::GrokUnsupportedVersion,
-                "Grok --version output is not valid UTF-8",
-            )
-        })?;
-        let version_text = stdout.split_whitespace().nth(1).ok_or_else(|| {
-            ToolError::new(
-                ErrorCode::GrokUnsupportedVersion,
-                "could not identify a semantic version in Grok --version output",
-            )
-        })?;
-        let version = Version::parse(version_text).map_err(|error| {
-            ToolError::new(
-                ErrorCode::GrokUnsupportedVersion,
-                format!("invalid Grok semantic version: {error}"),
-            )
-        })?;
-        if !(MINIMUM_GROK_VERSION..NEXT_UNSUPPORTED_GROK_VERSION).contains(&version) {
-            return Err(ToolError::new(
-                ErrorCode::GrokUnsupportedVersion,
-                format!(
-                    "unsupported Grok version {version}; expected >= {MINIMUM_GROK_VERSION} and < {NEXT_UNSUPPORTED_GROK_VERSION}"
-                ),
-            ));
-        }
-        Ok(version)
+        let result = self.run_command(&mut command).await;
+        let cleanup_deferred = runtime.finish();
+        parse_version_output(result?).map(|version| CachedVersionProbe {
+            version,
+            cleanup_deferred: AtomicBool::new(cleanup_deferred),
+        })
     }
 
     pub async fn search(
@@ -229,8 +223,9 @@ impl GrokClient {
         query: &str,
         response_format: ResponseFormat,
     ) -> Result<ToolResponse, ToolError> {
-        let mut cleanup_deferred = self.cleanup_stale_runtimes();
-        self.probe_version().await?;
+        let mut cleanup_deferred = self.cleanup_stale_runtimes().await;
+        let (_, version_cleanup_deferred) = self.probe_version_with_cleanup().await?;
+        cleanup_deferred |= version_cleanup_deferred;
         let validated = WebSearchInput {
             query: query.to_string(),
             response_format: Some(response_format),
@@ -252,8 +247,9 @@ impl GrokClient {
         instructions: Option<&str>,
         max_chars: usize,
     ) -> Result<ToolResponse, ToolError> {
-        let mut cleanup_deferred = self.cleanup_stale_runtimes();
-        self.probe_version().await?;
+        let mut cleanup_deferred = self.cleanup_stale_runtimes().await;
+        let (_, version_cleanup_deferred) = self.probe_version_with_cleanup().await?;
+        cleanup_deferred |= version_cleanup_deferred;
         let prompt = fetch_prompt(url, instructions, max_chars);
         let output = self.run_prompt(&prompt).await?;
         cleanup_deferred |= output.cleanup_deferred;
@@ -264,13 +260,13 @@ impl GrokClient {
         Ok(response)
     }
 
-    pub(crate) fn cleanup_stale_runtimes(&self) -> bool {
-        self.runtime.cleanup_stale()
+    pub(crate) async fn cleanup_stale_runtimes(&self) -> bool {
+        self.runtime.cleanup_stale().await
     }
 
     async fn run_prompt(&self, prompt: &str) -> Result<PromptOutput, ToolError> {
         let _permit = self.acquire_permit().await?;
-        let runtime = self.runtime.start()?;
+        let runtime = self.runtime.start().await?;
         let runtime_path = runtime.path().to_path_buf();
         let mut prompt_file = tempfile::Builder::new()
             .prefix("prompt-")
@@ -339,27 +335,67 @@ impl GrokClient {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        #[cfg(unix)]
+        command.process_group(0);
         command
     }
 
     async fn run_command(&self, command: &mut Command) -> Result<std::process::Output, ToolError> {
-        match timeout(self.config.timeout, command.output()).await {
-            Ok(Ok(output)) => Ok(output),
-            Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => Err(ToolError::new(
-                ErrorCode::GrokNotFound,
-                "Grok binary could not be started",
-            )),
-            Ok(Err(error)) => Err(ToolError::new(
-                ErrorCode::GrokExitFailed,
-                format!("could not start Grok process: {error}"),
-            )),
-            Err(_) => Err(ToolError::new(
-                ErrorCode::GrokTimeout,
-                format!(
-                    "Grok process exceeded the {} second timeout",
-                    self.config.timeout.as_secs_f64()
-                ),
-            )),
+        let child = command.spawn().map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                ToolError::new(ErrorCode::GrokNotFound, "Grok binary could not be started")
+            } else {
+                ToolError::new(
+                    ErrorCode::GrokExitFailed,
+                    format!("could not start Grok process: {error}"),
+                )
+            }
+        })?;
+        let pid = child.id();
+        let mut output_task =
+            OutputTaskGuard::new(tokio::spawn(async move { child.wait_with_output().await }));
+        let mut process_group = ProcessGroupGuard::new(pid);
+        match timeout(self.config.timeout, output_task.task()).await {
+            Ok(Ok(Ok(output))) => {
+                process_group.terminate();
+                Ok(output)
+            }
+            Ok(Ok(Err(error))) => {
+                process_group.terminate();
+                Err(ToolError::new(
+                    ErrorCode::GrokExitFailed,
+                    format!("could not wait for Grok process: {error}"),
+                ))
+            }
+            Ok(Err(error)) => {
+                process_group.terminate();
+                Err(ToolError::new(
+                    ErrorCode::GrokExitFailed,
+                    format!("Grok process task failed: {error}"),
+                ))
+            }
+            Err(_) => {
+                process_group.terminate();
+                match timeout(PROCESS_REAP_TIMEOUT, output_task.task()).await {
+                    Ok(Ok(Ok(_))) => {}
+                    Ok(Ok(Err(error))) => {
+                        tracing::warn!(%error, "Could not reap the timed-out Grok process");
+                    }
+                    Ok(Err(error)) => {
+                        tracing::warn!(%error, "Timed-out Grok process task failed while reaping");
+                    }
+                    Err(_) => tracing::warn!(
+                        "Timed-out Grok process did not finish within the bounded reaping window"
+                    ),
+                }
+                Err(ToolError::new(
+                    ErrorCode::GrokTimeout,
+                    format!(
+                        "Grok process exceeded the {} second timeout",
+                        self.config.timeout.as_secs_f64()
+                    ),
+                ))
+            }
         }
     }
 
@@ -372,6 +408,104 @@ impl GrokClient {
         })
     }
 }
+
+struct OutputTaskGuard {
+    task: JoinHandle<io::Result<std::process::Output>>,
+}
+
+impl OutputTaskGuard {
+    fn new(task: JoinHandle<io::Result<std::process::Output>>) -> Self {
+        Self { task }
+    }
+
+    fn task(&mut self) -> &mut JoinHandle<io::Result<std::process::Output>> {
+        &mut self.task
+    }
+}
+
+impl Drop for OutputTaskGuard {
+    fn drop(&mut self) {
+        if !self.task.is_finished() {
+            self.task.abort();
+        }
+    }
+}
+
+fn parse_version_output(output: std::process::Output) -> Result<Version, ToolError> {
+    if !output.status.success() {
+        return Err(exit_error(&output.stderr, None));
+    }
+    let stdout = String::from_utf8(output.stdout).map_err(|_| {
+        ToolError::new(
+            ErrorCode::GrokUnsupportedVersion,
+            "Grok --version output is not valid UTF-8",
+        )
+    })?;
+    let version_text = stdout.split_whitespace().nth(1).ok_or_else(|| {
+        ToolError::new(
+            ErrorCode::GrokUnsupportedVersion,
+            "could not identify a semantic version in Grok --version output",
+        )
+    })?;
+    let version = Version::parse(version_text).map_err(|error| {
+        ToolError::new(
+            ErrorCode::GrokUnsupportedVersion,
+            format!("invalid Grok semantic version: {error}"),
+        )
+    })?;
+    if !(MINIMUM_GROK_VERSION..NEXT_UNSUPPORTED_GROK_VERSION).contains(&version) {
+        return Err(ToolError::new(
+            ErrorCode::GrokUnsupportedVersion,
+            format!(
+                "unsupported Grok version {version}; expected >= {MINIMUM_GROK_VERSION} and < {NEXT_UNSUPPORTED_GROK_VERSION}"
+            ),
+        ));
+    }
+    Ok(version)
+}
+
+#[derive(Debug)]
+struct CachedVersionProbe {
+    version: Version,
+    cleanup_deferred: AtomicBool,
+}
+
+struct ProcessGroupGuard {
+    pid: Option<u32>,
+}
+
+impl ProcessGroupGuard {
+    fn new(pid: Option<u32>) -> Self {
+        Self { pid }
+    }
+
+    fn terminate(&mut self) {
+        if let Some(pid) = self.pid.take() {
+            terminate_process_group(pid);
+        }
+    }
+}
+
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        self.terminate();
+    }
+}
+
+#[cfg(unix)]
+fn terminate_process_group(pid: u32) {
+    let Some(pid) = rustix::process::Pid::from_raw(pid as i32) else {
+        return;
+    };
+    if let Err(error) = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL)
+        && error != rustix::io::Errno::SRCH
+    {
+        tracing::warn!(%error, "Could not terminate the Grok process group");
+    }
+}
+
+#[cfg(not(unix))]
+fn terminate_process_group(_pid: u32) {}
 
 fn add_guarded_arguments(command: &mut Command) {
     command
