@@ -69,7 +69,7 @@ impl SearchService {
             ok: true,
             verified: true,
             answer: format!(
-                "Grok CLI {version} is installed and supported. Live search was not requested."
+                "Grok CLI {version} is installed. Live search was not requested, so runtime protocol compatibility was not exercised."
             ),
             sources: Vec::new(),
             backend: "grok-build-cli".to_string(),

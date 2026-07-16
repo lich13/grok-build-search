@@ -23,11 +23,10 @@ use tokio::{
 use crate::{ErrorCode, ResponseFormat, ToolError, ToolResponse, WebSearchInput, parse_grok_json};
 use crate::{model::parse_grok_fetch_json, runtime::RuntimeManager};
 
-const MINIMUM_GROK_VERSION: Version = Version::new(0, 2, 93);
-const NEXT_UNSUPPORTED_GROK_VERSION: Version = Version::new(0, 3, 0);
 const PROCESS_REAP_TIMEOUT: Duration = Duration::from_secs(1);
 const DEFAULT_MAX_CONCURRENCY: usize = 2;
 const MAX_STDERR_CHARS: usize = 2_000;
+const ALLOWED_BUILTIN_TOOLS: &str = "web_search,web_fetch";
 const DENY_RULES: &[&str] = &[
     "Bash(*)",
     "Read(*)",
@@ -292,7 +291,7 @@ impl GrokClient {
 
         let mut command = self.base_command();
         runtime.apply_environment(&mut command);
-        add_guarded_arguments(&mut command);
+        add_guarded_arguments(&mut command, runtime.reasoning_effort());
         command
             .arg("--prompt-file")
             .arg(prompt_file.path())
@@ -459,14 +458,6 @@ fn parse_version_output(output: std::process::Output) -> Result<Version, ToolErr
             format!("invalid Grok semantic version: {error}"),
         )
     })?;
-    if !(MINIMUM_GROK_VERSION..NEXT_UNSUPPORTED_GROK_VERSION).contains(&version) {
-        return Err(ToolError::new(
-            ErrorCode::GrokUnsupportedVersion,
-            format!(
-                "unsupported Grok version {version}; expected >= {MINIMUM_GROK_VERSION} and < {NEXT_UNSUPPORTED_GROK_VERSION}"
-            ),
-        ));
-    }
     Ok(version)
 }
 
@@ -513,19 +504,25 @@ fn terminate_process_group(pid: u32) {
 #[cfg(not(unix))]
 fn terminate_process_group(_pid: u32) {}
 
-fn add_guarded_arguments(command: &mut Command) {
+fn add_guarded_arguments(command: &mut Command, reasoning_effort: Option<&str>) {
     command
         .arg("--no-plan")
         .arg("--no-subagents")
         .arg("--no-memory")
         .arg("--no-auto-update")
+        .arg("--always-approve")
         .arg("--verbatim")
         .arg("--output-format")
         .arg("json")
         .arg("--sandbox")
         .arg("read-only")
         .arg("--max-turns")
-        .arg("8");
+        .arg("8")
+        .arg("--tools")
+        .arg(ALLOWED_BUILTIN_TOOLS);
+    if let Some(reasoning_effort) = reasoning_effort {
+        command.arg("--reasoning-effort").arg(reasoning_effort);
+    }
     for rule in DENY_RULES {
         command.arg("--deny").arg(rule);
     }

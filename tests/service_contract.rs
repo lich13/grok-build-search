@@ -168,6 +168,12 @@ async fn doctor_defaults_to_version_probe_without_live_search() {
     assert!(output.ok);
     assert!(output.verified);
     assert!(output.answer.contains("0.2.93"));
+    assert!(
+        output
+            .answer
+            .contains("runtime protocol compatibility was not exercised")
+    );
+    assert!(!output.answer.contains("installed and supported"));
     assert!(output.sources.is_empty());
     assert!(output.warnings.is_empty());
     assert!(!log_path.exists());

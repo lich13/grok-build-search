@@ -9,7 +9,8 @@ xAI or OpenAI.
 ## Requirements
 
 - Codex with plugin support.
-- Grok Build CLI `>=0.2.93,<0.3.0`, installed as `grok` and already signed in.
+- Grok Build CLI with `--tools`, `--reasoning-effort`, `--always-approve`, and
+  structured JSON output, installed as `grok` and already signed in.
 - macOS or Linux on Apple Silicon/AArch64 or x86-64.
 - `curl` plus either `sha256sum` or `shasum` for the release launcher.
 
@@ -59,7 +60,7 @@ GitHub Release binaries, downloads the matching `SHA256SUMS`, verifies SHA-256,
 and caches the verified executable under:
 
 ```text
-${XDG_CACHE_HOME:-$HOME/.cache}/grok-build-search/v0.1.5/
+${XDG_CACHE_HOME:-$HOME/.cache}/grok-build-search/v0.1.6/
 ```
 
 The launcher validates the cached binary on every start. A corrupt or modified
@@ -72,15 +73,25 @@ Grok process with:
 
 - no plugin-level process deadline, a 365-day Codex MCP host ceiling, and a
   maximum of two concurrent processes;
+- an explicit `web_search,web_fetch` tool allowlist, preventing unrelated Grok
+  built-in tools from entering the backend request;
+- automatic approval is limited to that allowlist so headless web tools cannot
+  be cancelled by a closed prompt;
 - read-only Grok sandboxing and explicit file/terminal tool denials;
 - a private `0600` prompt file instead of query text in process arguments;
 - a unique temporary `GROK_HOME` and `HOME`, while the existing authentication
   file and configured default model remain in use;
+- the configured `[models].default_reasoning_effort` forwarded explicitly to
+  Grok, without overriding the configured default model;
 - common AI API-key environment variables removed from the child process;
 - no retries and no Grok subagents, memory, plans, or automatic updates.
 
 Grok runs until it exits or the MCP call is cancelled. Cancellation terminates
 the Grok process group before the isolated runtime is removed.
+
+The plugin parses `grok --version` for diagnostics but does not reject valid
+semantic versions by a numeric range. Unsupported CLI flags or backend protocol
+contracts are reported through Grok's explicit process failure.
 
 The temporary Grok state, including sessions, prompt history, memory indexes,
 and logs, is removed after every operation. Concurrent operations hold separate

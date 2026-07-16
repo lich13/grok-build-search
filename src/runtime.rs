@@ -9,6 +9,7 @@ use std::{
 };
 
 use fs2::FileExt;
+use serde::Deserialize;
 use tempfile::TempDir;
 use tokio::process::Command;
 
@@ -86,12 +87,14 @@ impl RuntimeManager {
             runtime_error(format!("could not lock the isolated Grok runtime: {error}"))
         })?;
         self.copy_configuration(directory.path())?;
+        let reasoning_effort = configured_reasoning_effort(directory.path());
         unlock(&global_lock);
 
         Ok(GrokRuntime {
             directory: Some(directory),
             active_lock: Some(active_lock),
             auth_path: self.auth_path.clone(),
+            reasoning_effort,
             cleanup_deferred,
         })
     }
@@ -203,6 +206,7 @@ pub(crate) struct GrokRuntime {
     directory: Option<TempDir>,
     active_lock: Option<File>,
     auth_path: Option<PathBuf>,
+    reasoning_effort: Option<String>,
     cleanup_deferred: bool,
 }
 
@@ -224,6 +228,10 @@ impl GrokRuntime {
         }
     }
 
+    pub(crate) fn reasoning_effort(&self) -> Option<&str> {
+        self.reasoning_effort.as_deref()
+    }
+
     pub(crate) fn finish(mut self) -> bool {
         let Some(directory) = self.directory.take() else {
             return self.cleanup_deferred;
@@ -237,6 +245,39 @@ impl GrokRuntime {
         }
         self.cleanup_deferred
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct GrokUserConfiguration {
+    models: Option<GrokModelsConfiguration>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GrokModelsConfiguration {
+    default_reasoning_effort: Option<String>,
+}
+
+fn configured_reasoning_effort(runtime: &Path) -> Option<String> {
+    let configuration = match fs::read_to_string(runtime.join("config.toml")) {
+        Ok(configuration) => configuration,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
+        Err(_) => {
+            tracing::warn!("Could not read copied Grok configuration for reasoning effort");
+            return None;
+        }
+    };
+    let configuration: GrokUserConfiguration = match toml::from_str(&configuration) {
+        Ok(configuration) => configuration,
+        Err(_) => {
+            tracing::warn!("Could not parse copied Grok configuration for reasoning effort");
+            return None;
+        }
+    };
+    configuration
+        .models
+        .and_then(|models| models.default_reasoning_effort)
+        .map(|effort| effort.trim().to_owned())
+        .filter(|effort| !effort.is_empty())
 }
 
 fn cleanup_stale_path(path: &Path) -> bool {

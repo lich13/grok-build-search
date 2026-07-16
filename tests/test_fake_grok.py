@@ -123,7 +123,7 @@ class FakeGrokTests(unittest.TestCase):
 
         self.assertEqual(result.stdout.strip(), "grok 0.2.93 (f00f96316d4b)")
 
-    def test_version_can_simulate_unsupported_release(self) -> None:
+    def test_version_can_simulate_future_release(self) -> None:
         environment = os.environ.copy()
         environment["FAKE_GROK_VERSION"] = "grok 0.3.0 (future)"
         result = subprocess.run(
@@ -147,6 +147,62 @@ class FakeGrokTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 17)
         self.assertIn("simulated Grok failure", result.stderr)
+
+    def test_x_search_serialization_mode_requires_web_tool_allowlist(self) -> None:
+        without_allowlist = self.run_fake("x-search-serialization")
+
+        self.assertEqual(without_allowlist.returncode, 23)
+        self.assertIn("unknown variant `x_search`", without_allowlist.stderr)
+
+        with tempfile.TemporaryDirectory() as directory:
+            prompt_file = Path(directory) / "prompt.txt"
+            prompt_file.write_text("test prompt", encoding="utf-8")
+            environment = os.environ.copy()
+            environment["FAKE_GROK_MODE"] = "x-search-serialization"
+            with_allowlist = subprocess.run(
+                [
+                    str(FAKE_GROK),
+                    "--tools",
+                    "web_search,web_fetch",
+                    "--prompt-file",
+                    str(prompt_file),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+
+        self.assertEqual(with_allowlist.returncode, 0)
+        self.assertIn("https://www.rust-lang.org/", with_allowlist.stdout)
+
+    def test_approval_required_mode_cancels_without_headless_approval(self) -> None:
+        without_approval = self.run_fake("approval-required")
+
+        self.assertEqual(without_approval.returncode, 0)
+        self.assertEqual(json.loads(without_approval.stdout)["stopReason"], "Cancelled")
+        self.assertEqual(json.loads(without_approval.stdout)["text"], "")
+
+        with tempfile.TemporaryDirectory() as directory:
+            prompt_file = Path(directory) / "prompt.txt"
+            prompt_file.write_text("test prompt", encoding="utf-8")
+            environment = os.environ.copy()
+            environment["FAKE_GROK_MODE"] = "approval-required"
+            with_approval = subprocess.run(
+                [
+                    str(FAKE_GROK),
+                    "--always-approve",
+                    "--prompt-file",
+                    str(prompt_file),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+
+        self.assertEqual(with_approval.returncode, 0)
+        self.assertIn("https://www.rust-lang.org/", with_approval.stdout)
 
     def test_exit_failed_detail_can_include_prompt_path_and_secret(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

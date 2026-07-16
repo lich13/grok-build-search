@@ -204,33 +204,43 @@ fn locator_returns_stable_not_found_error() {
 }
 
 #[tokio::test]
-async fn probe_accepts_supported_version_and_rejects_future_minor() {
-    let supported = client_with("search-success", TEST_TIMEOUT, 2, []);
-    assert_eq!(
-        supported.probe_version().await.unwrap().to_string(),
-        "0.2.93"
-    );
+async fn probe_accepts_any_semantic_version() {
+    for version in ["0.2.93", "0.2.101", "0.3.0", "1.0.0"] {
+        let client = client_with(
+            "search-success",
+            TEST_TIMEOUT,
+            2,
+            [(
+                OsString::from("FAKE_GROK_VERSION"),
+                OsString::from(format!("grok {version} (test)")),
+            )],
+        );
 
-    let future = client_with(
+        assert_eq!(client.probe_version().await.unwrap().to_string(), version);
+    }
+}
+
+#[tokio::test]
+async fn probe_rejects_nonsemantic_version_output() {
+    let client = client_with(
         "search-success",
         TEST_TIMEOUT,
         2,
         [(
             OsString::from("FAKE_GROK_VERSION"),
-            OsString::from("grok 0.3.0 (future)"),
+            OsString::from("grok development-build"),
         )],
     );
-    let error = future
-        .probe_version()
-        .await
-        .expect_err("future minor must fail closed");
+
+    let error = client.probe_version().await.unwrap_err();
+
     assert_eq!(error.code, ErrorCode::GrokUnsupportedVersion);
 }
 
 #[tokio::test]
-async fn search_rejects_unsupported_version_before_prompt_execution() {
+async fn search_runs_for_future_semantic_version() {
     let temp = TempDir::new().unwrap();
-    let log_path = temp.path().join("must-not-exist.json");
+    let log_path = temp.path().join("invocation.json");
     let client = client_with(
         "search-success",
         TEST_TIMEOUT,
@@ -247,13 +257,43 @@ async fn search_rejects_unsupported_version_before_prompt_execution() {
         ],
     );
 
-    let error = client
-        .search("must not run", ResponseFormat::Concise)
+    let output = client
+        .search("future version search", ResponseFormat::Concise)
         .await
-        .expect_err("unsupported version must fail before search");
+        .expect("semantic version must not be rejected by a numeric range gate");
 
-    assert_eq!(error.code, ErrorCode::GrokUnsupportedVersion);
-    assert!(!log_path.exists());
+    assert!(output.ok);
+    assert!(log_path.is_file());
+}
+
+#[tokio::test]
+async fn search_blocks_x_search_by_allowlisting_public_web_tools() {
+    let client = client_with("x-search-serialization", TEST_TIMEOUT, 2, []);
+
+    let output = client
+        .search("avoid x_search", ResponseFormat::Concise)
+        .await
+        .expect("web tool allowlist must prevent the x_search serialization error");
+
+    assert!(output.ok);
+    assert_eq!(output.sources[0].url, "https://www.rust-lang.org/");
+}
+
+#[tokio::test]
+async fn fetch_approves_allowlisted_web_tools_in_headless_mode() {
+    let client = client_with("approval-required", TEST_TIMEOUT, 2, []);
+
+    let output = client
+        .fetch(
+            "https://www.rust-lang.org/",
+            Some("Extract the page title"),
+            4_000,
+        )
+        .await
+        .expect("headless fetch must not be cancelled by a closed approval prompt");
+
+    assert!(output.ok);
+    assert_eq!(output.sources[0].url, "https://www.rust-lang.org/");
 }
 
 #[tokio::test]
@@ -302,6 +342,7 @@ async fn search_uses_isolated_prompt_file_and_guarded_arguments() {
         "--no-subagents",
         "--no-memory",
         "--no-auto-update",
+        "--always-approve",
         "--verbatim",
         "--output-format",
         "--sandbox",
@@ -313,7 +354,11 @@ async fn search_uses_isolated_prompt_file_and_guarded_arguments() {
         );
     }
     assert!(!arguments.contains(&query));
-    assert!(!arguments.contains(&"--tools"));
+    let tools_index = arguments
+        .iter()
+        .position(|argument| *argument == "--tools")
+        .expect("Grok invocation must define a built-in tool allowlist");
+    assert_eq!(arguments[tools_index + 1], "web_search,web_fetch");
     assert!(!arguments.contains(&"--disallowed-tools"));
     assert_eq!(invocation["prompt_mode"], "0600");
     assert_eq!(invocation["grok_web_fetch"], "1");
@@ -346,6 +391,103 @@ async fn search_uses_isolated_prompt_file_and_guarded_arguments() {
         ],
         "guardrails must use only rule prefixes accepted by Grok 0.2.93"
     );
+}
+
+#[tokio::test]
+async fn search_forwards_configured_reasoning_effort_without_overriding_model() {
+    let temp = TempDir::new().unwrap();
+    let real_home = temp.path().join("real-home");
+    let real_grok_home = real_home.join(".grok");
+    let runtime_root = temp.path().join("runtimes");
+    let log_path = temp.path().join("invocation.json");
+    fs::create_dir_all(&real_grok_home).unwrap();
+    fs::write(
+        real_grok_home.join("config.toml"),
+        "[models]\ndefault = \"grok-default\"\ndefault_reasoning_effort = \"high\"\n",
+    )
+    .unwrap();
+    let client = client_with_runtime(
+        "search-success",
+        TEST_TIMEOUT,
+        2,
+        &runtime_root,
+        [
+            (OsString::from("HOME"), real_home.into_os_string()),
+            (
+                OsString::from("FAKE_GROK_LOG"),
+                log_path.clone().into_os_string(),
+            ),
+        ],
+    );
+
+    client
+        .search("configured effort", ResponseFormat::Concise)
+        .await
+        .unwrap();
+
+    let invocation: Value = serde_json::from_slice(&fs::read(log_path).unwrap()).unwrap();
+    let arguments: Vec<&str> = invocation["args"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap())
+        .collect();
+    let effort_index = arguments
+        .iter()
+        .position(|argument| *argument == "--reasoning-effort")
+        .expect("configured effort must be forwarded explicitly");
+    assert_eq!(arguments[effort_index + 1], "high");
+    assert!(!arguments.contains(&"--model"));
+}
+
+#[tokio::test]
+async fn search_leaves_effort_unset_when_configuration_has_no_usable_default() {
+    for (case, configuration) in [
+        ("missing", None),
+        ("empty", Some("[models]\ndefault_reasoning_effort = \"\"\n")),
+        (
+            "malformed",
+            Some("[models\ndefault_reasoning_effort = \"high\"\n"),
+        ),
+    ] {
+        let temp = TempDir::new().unwrap();
+        let real_home = temp.path().join("real-home");
+        let real_grok_home = real_home.join(".grok");
+        let runtime_root = temp.path().join("runtimes");
+        let log_path = temp.path().join("invocation.json");
+        fs::create_dir_all(&real_grok_home).unwrap();
+        if let Some(configuration) = configuration {
+            fs::write(real_grok_home.join("config.toml"), configuration).unwrap();
+        }
+        let client = client_with_runtime(
+            "search-success",
+            TEST_TIMEOUT,
+            2,
+            &runtime_root,
+            [
+                (OsString::from("HOME"), real_home.into_os_string()),
+                (
+                    OsString::from("FAKE_GROK_LOG"),
+                    log_path.clone().into_os_string(),
+                ),
+            ],
+        );
+
+        let output = client
+            .search("native effort fallback", ResponseFormat::Concise)
+            .await
+            .unwrap_or_else(|error| panic!("{case} configuration failed: {error}"));
+
+        assert!(output.ok);
+        let invocation: Value = serde_json::from_slice(&fs::read(log_path).unwrap()).unwrap();
+        assert!(
+            !invocation["args"]
+                .to_string()
+                .contains("--reasoning-effort"),
+            "{case} configuration must leave effort to Grok"
+        );
+        assert!(runtime_entries(&runtime_root).is_empty());
+    }
 }
 
 #[tokio::test]

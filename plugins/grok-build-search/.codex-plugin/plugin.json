@@ -1,6 +1,6 @@
 {
   "name": "grok-build-search",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Search and fetch public web content through the local Grok Build CLI.",
   "author": {
     "name": "lich13",
