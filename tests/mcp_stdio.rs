@@ -83,7 +83,7 @@ impl TestServer {
             "params": {
                 "protocolVersion": "2025-11-25",
                 "capabilities": {},
-                "clientInfo": { "name": "integration-test", "version": "0.1.6" }
+                "clientInfo": { "name": "integration-test", "version": "0.1.7" }
             }
         }))
         .await;
@@ -192,5 +192,50 @@ async fn stdio_marks_structured_backend_failure_as_tool_error() {
         called["result"]["structuredContent"]["error"]["code"],
         "NO_SOURCES"
     );
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn stdio_remains_available_after_multiple_backend_failures() {
+    let mut server = TestServer::spawn("exit-failed").await;
+    server.initialize().await;
+
+    for id in [10, 11] {
+        server
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/call",
+                "params": {
+                    "name": "web_search",
+                    "arguments": { "query": format!("backend failure {id}") }
+                }
+            }))
+            .await;
+        let failed = server.response(id).await;
+        assert_eq!(failed["result"]["isError"], true);
+        assert_eq!(
+            failed["result"]["structuredContent"]["error"]["code"],
+            "GROK_EXIT_FAILED"
+        );
+    }
+
+    server
+        .send(json!({
+            "jsonrpc": "2.0",
+            "id": 12,
+            "method": "tools/call",
+            "params": { "name": "doctor", "arguments": { "live_search": false } }
+        }))
+        .await;
+    let doctor = server.response(12).await;
+    assert_eq!(doctor["result"]["isError"], false);
+    assert_eq!(doctor["result"]["structuredContent"]["ok"], true);
+
+    server
+        .send(json!({ "jsonrpc": "2.0", "id": 13, "method": "tools/list", "params": {} }))
+        .await;
+    let listed = server.response(13).await;
+    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 3);
     server.shutdown().await;
 }

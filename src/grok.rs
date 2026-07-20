@@ -516,8 +516,6 @@ fn add_guarded_arguments(command: &mut Command, reasoning_effort: Option<&str>) 
         .arg("json")
         .arg("--sandbox")
         .arg("read-only")
-        .arg("--max-turns")
-        .arg("8")
         .arg("--tools")
         .arg(ALLOWED_BUILTIN_TOOLS);
     if let Some(reasoning_effort) = reasoning_effort {

@@ -297,6 +297,19 @@ async fn fetch_approves_allowlisted_web_tools_in_headless_mode() {
 }
 
 #[tokio::test]
+async fn search_does_not_impose_an_agent_turn_limit() {
+    let client = client_with("reject-explicit-max-turns", TEST_TIMEOUT, 2, []);
+
+    let output = client
+        .search("search beyond eight agent turns", ResponseFormat::Concise)
+        .await
+        .expect("the plugin must leave agent-turn policy to Grok");
+
+    assert!(output.ok);
+    assert_eq!(output.sources[0].url, "https://www.rust-lang.org/");
+}
+
+#[tokio::test]
 async fn search_uses_isolated_prompt_file_and_guarded_arguments() {
     let temp = TempDir::new().unwrap();
     let log_path = temp.path().join("invocation.json");
@@ -354,6 +367,10 @@ async fn search_uses_isolated_prompt_file_and_guarded_arguments() {
         );
     }
     assert!(!arguments.contains(&query));
+    assert!(
+        !arguments.contains(&"--max-turns"),
+        "the plugin must not impose an agent-turn limit: {arguments:?}"
+    );
     let tools_index = arguments
         .iter()
         .position(|argument| *argument == "--tools")

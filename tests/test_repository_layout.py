@@ -62,8 +62,9 @@ class RepositoryLayoutTests(unittest.TestCase):
             "web_fetch",
             "doctor",
             "SHA-256",
-            "grok-build-search/v0.1.6/",
+            "grok-build-search/v0.1.7/",
             "no plugin-level process deadline",
+            "no plugin-level agent-turn limit",
             "365-day Codex MCP host ceiling",
             "temporary `GROK_HOME`",
             "`web_search,web_fetch` tool allowlist",
@@ -82,7 +83,7 @@ class RepositoryLayoutTests(unittest.TestCase):
         metadata = tomllib.loads(cargo_toml.read_text(encoding="utf-8"))
         package = metadata["package"]
         self.assertEqual(package["name"], "grok-build-search-mcp")
-        self.assertEqual(package["version"], "0.1.6")
+        self.assertEqual(package["version"], "0.1.7")
         self.assertEqual(package["edition"], "2024")
         self.assertEqual(package["rust-version"], "1.94.1")
 
@@ -100,7 +101,7 @@ class RepositoryLayoutTests(unittest.TestCase):
         )
 
         self.assertEqual(manifest["name"], "grok-build-search")
-        self.assertEqual(manifest["version"], "0.1.6")
+        self.assertEqual(manifest["version"], "0.1.7")
         self.assertEqual(manifest["author"]["name"], "lich13")
         self.assertEqual(manifest["license"], "MIT")
         self.assertEqual(manifest["skills"], "./skills/")

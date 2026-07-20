@@ -60,7 +60,7 @@ GitHub Release binaries, downloads the matching `SHA256SUMS`, verifies SHA-256,
 and caches the verified executable under:
 
 ```text
-${XDG_CACHE_HOME:-$HOME/.cache}/grok-build-search/v0.1.6/
+${XDG_CACHE_HOME:-$HOME/.cache}/grok-build-search/v0.1.7/
 ```
 
 The launcher validates the cached binary on every start. A corrupt or modified
@@ -71,8 +71,8 @@ The MCP server then locates `grok` through `GROK_BIN`, `PATH`,
 `~/.local/bin/grok`, or `~/.grok/bin/grok`. Each operation runs in a separate
 Grok process with:
 
-- no plugin-level process deadline, a 365-day Codex MCP host ceiling, and a
-  maximum of two concurrent processes;
+- no plugin-level process deadline, no plugin-level agent-turn limit, a
+  365-day Codex MCP host ceiling, and a maximum of two concurrent processes;
 - an explicit `web_search,web_fetch` tool allowlist, preventing unrelated Grok
   built-in tools from entering the backend request;
 - automatic approval is limited to that allowlist so headless web tools cannot

@@ -184,6 +184,12 @@ def main() -> int:
             return 23
         mode = "search-success"
 
+    if mode == "reject-explicit-max-turns":
+        if "--max-turns" in arguments:
+            print("Error: max turns reached", file=sys.stderr)
+            return 24
+        mode = "search-success"
+
     if mode == "approval-required":
         if "--always-approve" not in arguments:
             print(
