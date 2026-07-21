@@ -87,12 +87,12 @@ def break_runtime_cleanup() -> None:
     runtime.write_text("blocks remove_dir_all", encoding="utf-8")
 
 
-def grok_config_text() -> str | None:
+def grok_file_text(name: str) -> str | None:
     grok_home = os.environ.get("GROK_HOME")
     if not grok_home:
         return None
-    config = Path(grok_home) / "config.toml"
-    return config.read_text(encoding="utf-8") if config.is_file() else None
+    path = Path(grok_home) / name
+    return path.read_text(encoding="utf-8") if path.is_file() else None
 
 
 def write_pid_log(path: str, parent: int, child: int) -> None:
@@ -139,7 +139,8 @@ def main() -> int:
                     "anthropic_api_key": os.environ.get("ANTHROPIC_API_KEY"),
                     "cwd": str(Path.cwd()),
                     "grok_auth_path": os.environ.get("GROK_AUTH_PATH"),
-                    "grok_config": grok_config_text(),
+                    "grok_agent_id": grok_file_text("agent_id"),
+                    "grok_config": grok_file_text("config.toml"),
                     "grok_home": os.environ.get("GROK_HOME"),
                     "grok_home_mode": (
                         path_mode(Path(os.environ["GROK_HOME"]))
@@ -157,6 +158,7 @@ def main() -> int:
                         else None
                     ),
                     "grok_storage_mode": os.environ.get("GROK_STORAGE_MODE"),
+                    "grok_models_cache": grok_file_text("models_cache.json"),
                     "grok_web_fetch": os.environ.get("GROK_WEB_FETCH"),
                     "home": os.environ.get("HOME"),
                     "mode": mode,
@@ -188,6 +190,21 @@ def main() -> int:
         if "--max-turns" in arguments:
             print("Error: max turns reached", file=sys.stderr)
             return 24
+        mode = "search-success"
+
+    if mode == "reject-explicit-model-selection":
+        forbidden = [
+            argument
+            for argument in ["--reasoning-effort", "--model"]
+            if argument in arguments
+        ]
+        if forbidden:
+            print(
+                "Error: explicit model selection is not native: "
+                + ",".join(forbidden),
+                file=sys.stderr,
+            )
+            return 25
         mode = "search-success"
 
     if mode == "approval-required":

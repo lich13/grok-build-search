@@ -411,20 +411,21 @@ async fn search_uses_isolated_prompt_file_and_guarded_arguments() {
 }
 
 #[tokio::test]
-async fn search_forwards_configured_reasoning_effort_without_overriding_model() {
+async fn search_leaves_model_and_effort_to_grok_native_configuration() {
     let temp = TempDir::new().unwrap();
     let real_home = temp.path().join("real-home");
     let real_grok_home = real_home.join(".grok");
     let runtime_root = temp.path().join("runtimes");
     let log_path = temp.path().join("invocation.json");
     fs::create_dir_all(&real_grok_home).unwrap();
-    fs::write(
-        real_grok_home.join("config.toml"),
-        "[models]\ndefault = \"grok-default\"\ndefault_reasoning_effort = \"high\"\n",
-    )
-    .unwrap();
+    let configuration = "[models]\ndefault = \"grok-4.5\"\ndefault_reasoning_effort = \"high\"\n";
+    let models_cache = "{\"models\":{\"grok-4.5\":{\"info\":{\"reasoning_efforts\":[{\"id\":\"high\",\"default\":true}]}}}}\n";
+    let agent_id = "native-agent-id\n";
+    fs::write(real_grok_home.join("config.toml"), configuration).unwrap();
+    fs::write(real_grok_home.join("models_cache.json"), models_cache).unwrap();
+    fs::write(real_grok_home.join("agent_id"), agent_id).unwrap();
     let client = client_with_runtime(
-        "search-success",
+        "reject-explicit-model-selection",
         TEST_TIMEOUT,
         2,
         &runtime_root,
@@ -438,9 +439,9 @@ async fn search_forwards_configured_reasoning_effort_without_overriding_model() 
     );
 
     client
-        .search("configured effort", ResponseFormat::Concise)
+        .search("native model selection", ResponseFormat::Concise)
         .await
-        .unwrap();
+        .expect("Grok must resolve model and effort from its copied native state");
 
     let invocation: Value = serde_json::from_slice(&fs::read(log_path).unwrap()).unwrap();
     let arguments: Vec<&str> = invocation["args"]
@@ -449,19 +450,26 @@ async fn search_forwards_configured_reasoning_effort_without_overriding_model() 
         .iter()
         .map(|value| value.as_str().unwrap())
         .collect();
-    let effort_index = arguments
-        .iter()
-        .position(|argument| *argument == "--reasoning-effort")
-        .expect("configured effort must be forwarded explicitly");
-    assert_eq!(arguments[effort_index + 1], "high");
+    assert!(!arguments.contains(&"--reasoning-effort"));
     assert!(!arguments.contains(&"--model"));
+    assert_eq!(invocation["grok_config"], configuration);
+    assert_eq!(invocation["grok_models_cache"], models_cache);
+    assert_eq!(invocation["grok_agent_id"], agent_id);
+    assert!(runtime_entries(&runtime_root).is_empty());
 }
 
 #[tokio::test]
-async fn search_leaves_effort_unset_when_configuration_has_no_usable_default() {
+async fn search_never_overrides_native_model_or_effort_values() {
     for (case, configuration) in [
         ("missing", None),
-        ("empty", Some("[models]\ndefault_reasoning_effort = \"\"\n")),
+        (
+            "xhigh",
+            Some("[models]\ndefault_reasoning_effort = \"xhigh\"\n"),
+        ),
+        (
+            "model-specific",
+            Some("[models]\ndefault_reasoning_effort = \"deep\"\n"),
+        ),
         (
             "malformed",
             Some("[models\ndefault_reasoning_effort = \"high\"\n"),
@@ -477,7 +485,7 @@ async fn search_leaves_effort_unset_when_configuration_has_no_usable_default() {
             fs::write(real_grok_home.join("config.toml"), configuration).unwrap();
         }
         let client = client_with_runtime(
-            "search-success",
+            "reject-explicit-model-selection",
             TEST_TIMEOUT,
             2,
             &runtime_root,
@@ -495,14 +503,19 @@ async fn search_leaves_effort_unset_when_configuration_has_no_usable_default() {
             .await
             .unwrap_or_else(|error| panic!("{case} configuration failed: {error}"));
 
-        assert!(output.ok);
+        assert!(output.ok, "{case} configuration must be left to Grok");
         let invocation: Value = serde_json::from_slice(&fs::read(log_path).unwrap()).unwrap();
+        let arguments = invocation["args"].as_array().unwrap();
         assert!(
-            !invocation["args"]
-                .to_string()
-                .contains("--reasoning-effort"),
-            "{case} configuration must leave effort to Grok"
+            !arguments
+                .iter()
+                .any(|argument| argument == "--reasoning-effort")
         );
+        assert!(!arguments.iter().any(|argument| argument == "--model"));
+        match configuration {
+            Some(configuration) => assert_eq!(invocation["grok_config"], configuration),
+            None => assert!(invocation["grok_config"].is_null()),
+        }
         assert!(runtime_entries(&runtime_root).is_empty());
     }
 }

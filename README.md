@@ -9,8 +9,8 @@ xAI or OpenAI.
 ## Requirements
 
 - Codex with plugin support.
-- Grok Build CLI with `--tools`, `--reasoning-effort`, `--always-approve`, and
-  structured JSON output, installed as `grok` and already signed in.
+- Grok Build CLI with `--tools`, `--always-approve`, and structured JSON output,
+  installed as `grok` and already signed in.
 - macOS or Linux on Apple Silicon/AArch64 or x86-64.
 - `curl` plus either `sha256sum` or `shasum` for the release launcher.
 
@@ -60,7 +60,7 @@ GitHub Release binaries, downloads the matching `SHA256SUMS`, verifies SHA-256,
 and caches the verified executable under:
 
 ```text
-${XDG_CACHE_HOME:-$HOME/.cache}/grok-build-search/v0.1.7/
+${XDG_CACHE_HOME:-$HOME/.cache}/grok-build-search/v0.1.8/
 ```
 
 The launcher validates the cached binary on every start. A corrupt or modified
@@ -79,10 +79,12 @@ Grok process with:
   be cancelled by a closed prompt;
 - read-only Grok sandboxing and explicit file/terminal tool denials;
 - a private `0600` prompt file instead of query text in process arguments;
-- a unique temporary `GROK_HOME` and `HOME`, while the existing authentication
-  file and configured default model remain in use;
-- the configured `[models].default_reasoning_effort` forwarded explicitly to
-  Grok, without overriding the configured default model;
+- a unique temporary `GROK_HOME` and `HOME`, with the existing authentication
+  file plus copied native configuration and model metadata;
+- native Grok model and reasoning-effort resolution: the plugin does not pass
+  `--model` or `--reasoning-effort`, and does not validate, map, or clamp effort;
+- Codex's `model_reasoning_effort` controls only the outer Codex task and is not
+  forwarded to Grok;
 - common AI API-key environment variables removed from the child process;
 - no retries and no Grok subagents, memory, plans, or automatic updates.
 
@@ -92,6 +94,8 @@ the Grok process group before the isolated runtime is removed.
 The plugin parses `grok --version` for diagnostics but does not reject valid
 semantic versions by a numeric range. Unsupported CLI flags or backend protocol
 contracts are reported through Grok's explicit process failure.
+Invalid native model or effort configuration is likewise left to Grok and is
+not retried or silently changed by the plugin.
 
 The temporary Grok state, including sessions, prompt history, memory indexes,
 and logs, is removed after every operation. Concurrent operations hold separate

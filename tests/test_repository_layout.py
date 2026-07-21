@@ -57,19 +57,20 @@ class RepositoryLayoutTests(unittest.TestCase):
         for required in [
             "codex plugin marketplace add https://github.com/lich13/grok-build-search.git",
             "codex plugin add grok-build-search@grok-build-search",
-            "Grok Build CLI with `--tools`, `--reasoning-effort`, `--always-approve`, and structured JSON output",
+            "Grok Build CLI with `--tools`, `--always-approve`, and structured JSON output",
             "web_search",
             "web_fetch",
             "doctor",
             "SHA-256",
-            "grok-build-search/v0.1.7/",
+            "grok-build-search/v0.1.8/",
             "no plugin-level process deadline",
             "no plugin-level agent-turn limit",
             "365-day Codex MCP host ceiling",
             "temporary `GROK_HOME`",
             "`web_search,web_fetch` tool allowlist",
             "automatic approval is limited to that allowlist",
-            "configured `[models].default_reasoning_effort`",
+            "the plugin does not pass `--model` or `--reasoning-effort`",
+            "Codex's `model_reasoning_effort` controls only the outer Codex task",
             "removed after every operation",
             "not affiliated with or endorsed by xAI or OpenAI",
         ]:
@@ -83,7 +84,7 @@ class RepositoryLayoutTests(unittest.TestCase):
         metadata = tomllib.loads(cargo_toml.read_text(encoding="utf-8"))
         package = metadata["package"]
         self.assertEqual(package["name"], "grok-build-search-mcp")
-        self.assertEqual(package["version"], "0.1.7")
+        self.assertEqual(package["version"], "0.1.8")
         self.assertEqual(package["edition"], "2024")
         self.assertEqual(package["rust-version"], "1.94.1")
 
@@ -101,7 +102,7 @@ class RepositoryLayoutTests(unittest.TestCase):
         )
 
         self.assertEqual(manifest["name"], "grok-build-search")
-        self.assertEqual(manifest["version"], "0.1.7")
+        self.assertEqual(manifest["version"], "0.1.8")
         self.assertEqual(manifest["author"]["name"], "lich13")
         self.assertEqual(manifest["license"], "MIT")
         self.assertEqual(manifest["skills"], "./skills/")
